@@ -1,11 +1,12 @@
 import importlib.util
 import json
+import math
 import os
 import sqlite3
 import tempfile
 
 import pytest
-from backtest.optimizer import OptimizeResult, ParamSpace, _run_single_trial, parse_params_string
+from backtest.optimizer import OptimizeResult, ParamSpace, _run_single_trial, parse_params_string, GridSearchOptimizer
 
 
 class TestParseParamsString:
@@ -293,3 +294,61 @@ class TestSaveResults:
         assert rows[0][0] == "TestStrategy"
         assert rows[0][1] == 1.85
         assert json.loads(rows[0][2]) == {"X": 10, "Y": 2.5}
+
+
+class TestShadowPowerOptimize:
+    """Integration test: optimize Shadow Power strategy params on synthetic 15m data."""
+
+    @pytest.fixture
+    def db_with_15m_data(self):
+        """Create DB with 15m bars spanning multiple 4H periods."""
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        conn = sqlite3.connect(tmp.name)
+        conn.execute("""
+            CREATE TABLE klines (
+                exchange TEXT, symbol TEXT, interval TEXT, timestamp INTEGER,
+                open REAL, high REAL, low REAL, close REAL, volume REAL,
+                PRIMARY KEY (exchange, symbol, interval, timestamp)
+            )
+        """)
+        # 2000 bars of 15m = ~20 days, enough for DECISION_LEN=10 on 4H
+        base_ts = 1704067200000  # 2024-01-01 00:00 UTC
+        for i in range(2000):
+            ts = base_ts + i * 900000  # 15min = 900000ms
+            # Synthetic price with some wave pattern
+            price = 40000 + 2000 * math.sin(i / 50.0) + i * 0.5
+            high = price + 100 + 50 * abs(math.sin(i / 7.0))
+            low = price - 100 - 50 * abs(math.sin(i / 11.0))
+            vol = 1000 + 500 * abs(math.sin(i / 30.0))
+            conn.execute(
+                "INSERT INTO klines VALUES (?,?,?,?,?,?,?,?,?)",
+                ("binance", "BTCUSDT", "15m", ts, price, high, low, price + 10, vol),
+            )
+        conn.commit()
+        conn.close()
+        yield tmp.name
+        os.unlink(tmp.name)
+
+    def test_optimize_shadow_power_params(self, db_with_15m_data):
+        space = ParamSpace({
+            "DECISION_LEN": [10, 20],
+            "SHADOW_FACTOR": [2.0, 3.0],
+        })
+        optimizer = GridSearchOptimizer(
+            db_path=db_with_15m_data,
+            strategy_path="strategies/shadow_power_backtest.py",
+            symbol="BTCUSDT",
+            interval="15m",
+            start="2024-01-01",
+            end="2024-01-20",
+            balance=1000,
+            leverage=49,
+            param_space=space,
+            objective="sharpe_ratio",
+            n_jobs=1,
+        )
+        result = optimizer.run()
+        assert result.total_trials == 4
+        assert result.best_params is not None
+        assert "DECISION_LEN" in result.best_params
+        assert "SHADOW_FACTOR" in result.best_params
