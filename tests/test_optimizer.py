@@ -1,5 +1,9 @@
+import os
+import sqlite3
+import tempfile
+
 import pytest
-from backtest.optimizer import ParamSpace
+from backtest.optimizer import OptimizeResult, ParamSpace, _run_single_trial
 
 
 class TestParamSpace:
@@ -34,3 +38,65 @@ class TestParamSpace:
         space = ParamSpace({})
         assert space.grid() == [{}]
         assert space.total_combinations == 1
+
+
+class TestRunSingleTrial:
+    @pytest.fixture
+    def db_with_data(self):
+        """Create a temp DB with enough 1h bars for a simple strategy."""
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        conn = sqlite3.connect(tmp.name)
+        conn.execute("""
+            CREATE TABLE klines (
+                exchange TEXT, symbol TEXT, interval TEXT, timestamp INTEGER,
+                open REAL, high REAL, low REAL, close REAL, volume REAL,
+                PRIMARY KEY (exchange, symbol, interval, timestamp)
+            )
+        """)
+        # Insert 100 bars of 1h data starting 2024-01-01 00:00 UTC
+        base_ts = 1704067200000  # 2024-01-01 00:00:00 UTC in ms
+        for i in range(100):
+            ts = base_ts + i * 3600000
+            price = 40000 + i * 10
+            conn.execute(
+                "INSERT INTO klines VALUES (?,?,?,?,?,?,?,?,?)",
+                ("binance", "BTCUSDT", "1h", ts, price, price + 50, price - 50, price + 5, 1000.0),
+            )
+        conn.commit()
+        conn.close()
+        yield tmp.name
+        os.unlink(tmp.name)
+
+    def test_run_single_trial_returns_dict(self, db_with_data):
+        trial_args = {
+            "db_path": db_with_data,
+            "strategy_path": "strategies/example_ma_cross.py",
+            "symbol": "BTCUSDT",
+            "interval": "1h",
+            "exchange": "binance",
+            "start": "2024-01-01 00:00:00",
+            "end": "2024-01-05 00:00:00",
+            "balance": 10000.0,
+            "leverage": 10,
+            "params": {"short_period": 5, "long_period": 20},
+        }
+        result = _run_single_trial(trial_args)
+        assert "params" in result
+        assert "score" in result
+        assert "report" in result
+        assert result["params"] == {"short_period": 5, "long_period": 20}
+        assert isinstance(result["score"], float)
+
+
+class TestOptimizeResult:
+    def test_fields(self):
+        r = OptimizeResult(
+            best_params={"X": 1},
+            best_score=2.5,
+            all_trials=[{"params": {"X": 1}, "score": 2.5, "report": {}}],
+            objective="sharpe_ratio",
+            total_trials=1,
+            elapsed_seconds=1.0,
+        )
+        assert r.best_score == 2.5
+        assert r.total_trials == 1

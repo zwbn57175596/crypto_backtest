@@ -1,7 +1,72 @@
 from __future__ import annotations
 
+import importlib.util
 import itertools
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
+
+
+@dataclass
+class OptimizeResult:
+    best_params: dict
+    best_score: float
+    all_trials: list[dict]
+    objective: str
+    total_trials: int
+    elapsed_seconds: float
+
+
+def _load_strategy_class(path: str):
+    """Load BaseStrategy subclass from file path."""
+    from backtest.strategy import BaseStrategy
+
+    spec = importlib.util.spec_from_file_location("user_strategy", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for attr in dir(module):
+        obj = getattr(module, attr)
+        if isinstance(obj, type) and issubclass(obj, BaseStrategy) and obj is not BaseStrategy:
+            return obj
+    raise ValueError(f"No BaseStrategy subclass found in {path}")
+
+
+def _make_strategy(base_class: type, params: dict) -> type:
+    """Create strategy subclass with overridden class attributes."""
+    return type(f"{base_class.__name__}_trial", (base_class,), params)
+
+
+def _run_single_trial(args: dict) -> dict:
+    """Worker function for multiprocessing. Must be top-level for pickling."""
+    from backtest.engine import BacktestEngine
+    from backtest.reporter import Reporter
+
+    strategy_class = _load_strategy_class(args["strategy_path"])
+    trial_class = _make_strategy(strategy_class, args["params"])
+
+    engine = BacktestEngine(
+        db_path=args["db_path"],
+        symbol=args["symbol"],
+        interval=args["interval"],
+        exchange=args["exchange"],
+        strategy_class=trial_class,
+        balance=args["balance"],
+        leverage=args["leverage"],
+        start=args["start"],
+        end=args["end"],
+    )
+
+    result = engine.run()
+    report = Reporter.generate(result)
+
+    objective = args.get("objective", "sharpe_ratio")
+    score = report.get(objective, 0.0)
+
+    return {
+        "params": args["params"],
+        "score": score,
+        "report": {k: v for k, v in report.items() if k not in ("equity_curve", "trades")},
+    }
 
 
 class ParamSpace:
