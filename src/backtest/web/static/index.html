@@ -85,10 +85,17 @@
 </div>
 
 <script>
-const eqChart = echarts.init(document.getElementById('chart-equity'));
-const ddChart = echarts.init(document.getElementById('chart-dd'));
-const pnlChart = echarts.init(document.getElementById('chart-pnl'));
-window.addEventListener('resize', () => { eqChart.resize(); ddChart.resize(); pnlChart.resize(); });
+// 延迟初始化：等 content 可见后再 init，否则画布尺寸为 0
+let eqChart, ddChart, pnlChart;
+function initCharts() {
+  if (eqChart) return;
+  eqChart = echarts.init(document.getElementById('chart-equity'));
+  ddChart = echarts.init(document.getElementById('chart-dd'));
+  pnlChart = echarts.init(document.getElementById('chart-pnl'));
+}
+window.addEventListener('resize', () => {
+  if (eqChart) { eqChart.resize(); ddChart.resize(); pnlChart.resize(); }
+});
 
 // 降采样：数据点太多时抽样到 maxPoints 个
 function downsample(dates, vals, maxPoints) {
@@ -131,6 +138,8 @@ function loadReport(id) {
   fetch(`/api/reports/${id}`).then(r => r.json()).then(d => {
     document.getElementById('content').style.display = '';
     document.getElementById('loading').style.display = 'none';
+    // content 可见后再初始化图表
+    initCharts();
     document.getElementById('meta-info').textContent =
       `${d.strategy} | ${d.symbol} ${d.interval} | ${d.created_at.slice(0,19)}`;
 
