@@ -181,3 +181,101 @@ class GridSearchOptimizer:
             total_trials=total,
             elapsed_seconds=elapsed,
         )
+
+
+class OptunaOptimizer:
+    """Bayesian optimization using Optuna."""
+
+    def __init__(
+        self,
+        db_path: str,
+        strategy_path: str,
+        symbol: str,
+        interval: str,
+        start: str,
+        end: str,
+        balance: float = 10000.0,
+        leverage: int = 10,
+        param_space: ParamSpace | None = None,
+        objective: str = "sharpe_ratio",
+        n_trials: int = 100,
+        n_jobs: int = 1,
+    ):
+        try:
+            import optuna  # noqa: F401
+        except ImportError:
+            raise ImportError(
+                "OptunaOptimizer requires the 'optuna' package. "
+                "Install it with: pip install optuna"
+            )
+
+        self.db_path = db_path
+        self.strategy_path = strategy_path
+        self.symbol = symbol
+        self.interval = interval
+        self.start = f"{start} 00:00:00" if len(start) == 10 else start
+        self.end = f"{end} 23:59:59" if len(end) == 10 else end
+        self.balance = balance
+        self.leverage = leverage
+        self.param_space = param_space or ParamSpace({})
+        self.objective = objective
+        self.n_trials = n_trials
+        self.n_jobs = n_jobs
+
+    def _suggest_params(self, trial) -> dict:
+        """Map ParamSpace to Optuna trial suggestions."""
+        params = {}
+        for name, spec in self.param_space._space.items():
+            if isinstance(spec, list):
+                params[name] = trial.suggest_categorical(name, spec)
+            elif isinstance(spec, tuple):
+                min_val, max_val, step = spec
+                if isinstance(min_val, int) and isinstance(max_val, int) and isinstance(step, int):
+                    params[name] = trial.suggest_int(name, min_val, max_val, step=step)
+                else:
+                    params[name] = trial.suggest_float(
+                        name, float(min_val), float(max_val), step=float(step)
+                    )
+        return params
+
+    def run(self) -> OptimizeResult:
+        """Run Bayesian optimization with Optuna."""
+        import optuna
+
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+        all_trials: list[dict] = []
+        t0 = time.time()
+
+        def objective_fn(trial):
+            params = self._suggest_params(trial)
+            trial_args = {
+                "db_path": self.db_path,
+                "strategy_path": self.strategy_path,
+                "symbol": self.symbol,
+                "interval": self.interval,
+                "exchange": "binance",
+                "start": self.start,
+                "end": self.end,
+                "balance": self.balance,
+                "leverage": self.leverage,
+                "params": params,
+                "objective": self.objective,
+            }
+            result = _run_single_trial(trial_args)
+            all_trials.append(result)
+            return result["score"]
+
+        study = optuna.create_study(direction="maximize")
+        study.optimize(objective_fn, n_trials=self.n_trials, n_jobs=self.n_jobs)
+
+        all_trials.sort(key=lambda r: r["score"], reverse=True)
+        elapsed = time.time() - t0
+
+        return OptimizeResult(
+            best_params=all_trials[0]["params"] if all_trials else {},
+            best_score=all_trials[0]["score"] if all_trials else 0.0,
+            all_trials=all_trials,
+            objective=self.objective,
+            total_trials=len(all_trials),
+            elapsed_seconds=elapsed,
+        )
