@@ -5,7 +5,31 @@ import sqlite3
 import tempfile
 
 import pytest
-from backtest.optimizer import OptimizeResult, ParamSpace, _run_single_trial
+from backtest.optimizer import OptimizeResult, ParamSpace, _run_single_trial, parse_params_string
+
+
+class TestParseParamsString:
+    def test_range_params(self):
+        space = parse_params_string("DECISION_LEN=20:80:10")
+        combos = space.grid()
+        assert combos[0] == {"DECISION_LEN": 20}
+        assert combos[-1] == {"DECISION_LEN": 80}
+
+    def test_choice_params(self):
+        space = parse_params_string("TOLERANCE_RATE=0.005|0.00618|0.008")
+        combos = space.grid()
+        assert len(combos) == 3
+        assert combos[0] == {"TOLERANCE_RATE": 0.005}
+
+    def test_multiple_params(self):
+        space = parse_params_string("X=1:3:1,Y=10|20")
+        assert space.total_combinations == 6
+
+    def test_float_range(self):
+        space = parse_params_string("SF=1.5:3.0:0.5")
+        combos = space.grid()
+        assert len(combos) == 4
+        assert combos[0] == {"SF": 1.5}
 
 
 class TestParamSpace:

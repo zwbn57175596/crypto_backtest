@@ -106,6 +106,85 @@ def cmd_web(args: argparse.Namespace) -> None:
     uvicorn.run(app, host="0.0.0.0", port=args.port)
 
 
+def cmd_optimize(args: argparse.Namespace) -> None:
+    from backtest.optimizer import (
+        GridSearchOptimizer, OptunaOptimizer, parse_params_string, save_results,
+    )
+
+    param_space = parse_params_string(args.params)
+    strategy_class = _load_strategy(args.strategy)
+
+    print(f"Optimizing {strategy_class.__name__}: {param_space.total_combinations} combinations, "
+          f"{args.n_jobs or 'auto'} workers, objective={args.objective}")
+
+    if args.method == "optuna":
+        optimizer = OptunaOptimizer(
+            db_path=args.db or str(Path("data") / "klines.db"),
+            strategy_path=args.strategy,
+            symbol=args.symbol,
+            interval=args.interval,
+            start=args.start,
+            end=args.end,
+            balance=args.balance,
+            leverage=args.leverage,
+            param_space=param_space,
+            objective=args.objective,
+            n_trials=args.n_trials,
+            n_jobs=args.n_jobs or 1,
+        )
+    else:
+        optimizer = GridSearchOptimizer(
+            db_path=args.db or str(Path("data") / "klines.db"),
+            strategy_path=args.strategy,
+            symbol=args.symbol,
+            interval=args.interval,
+            start=args.start,
+            end=args.end,
+            balance=args.balance,
+            leverage=args.leverage,
+            param_space=param_space,
+            objective=args.objective,
+            n_jobs=args.n_jobs,
+        )
+
+    result = optimizer.run()
+
+    # Print results table
+    print(f"\nOptimization Complete: {result.total_trials} trials, "
+          f"best {result.objective} = {result.best_score:.4f} "
+          f"({result.elapsed_seconds:.1f}s)\n")
+
+    # Table header
+    param_names = list(result.best_params.keys()) if result.best_params else []
+    header = " Rank | " + " | ".join(f"{p:>12}" for p in param_names)
+    header += f" | {'Score':>8} | {'Return':>8} | {'MaxDD':>8}"
+    print(header)
+    print("-" * len(header))
+
+    top_n = min(args.top, len(result.all_trials))
+    for i, trial in enumerate(result.all_trials[:top_n]):
+        row = f" {i+1:>4} | "
+        row += " | ".join(f"{trial['params'].get(p, ''):>12}" for p in param_names)
+        report = trial.get("report", {})
+        row += f" | {trial['score']:>8.4f}"
+        row += f" | {report.get('net_return', 0):>+7.1%}"
+        row += f" | {report.get('max_drawdown', 0):>-7.1%}"
+        print(row)
+
+    # Save to database
+    report_db = str(Path(args.db or str(Path("data") / "klines.db")).parent / "reports.db")
+    save_results(
+        db_path=report_db,
+        strategy=strategy_class.__name__,
+        symbol=args.symbol,
+        interval=args.interval,
+        start_date=args.start,
+        end_date=args.end,
+        result=result,
+    )
+    print(f"\nResults saved to database ({result.total_trials} rows).")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="backtest", description="Crypto futures backtester")
     sub = parser.add_subparsers(dest="command")
@@ -133,6 +212,24 @@ def main() -> None:
     p_web.add_argument("--port", type=int, default=8000)
     p_web.add_argument("--db", default=None)
 
+    p_opt = sub.add_parser("optimize", help="Optimize strategy parameters")
+    p_opt.add_argument("--strategy", required=True)
+    p_opt.add_argument("--symbol", required=True)
+    p_opt.add_argument("--interval", required=True)
+    p_opt.add_argument("--exchange", default="binance")
+    p_opt.add_argument("--start", required=True, help="YYYY-MM-DD")
+    p_opt.add_argument("--end", required=True, help="YYYY-MM-DD")
+    p_opt.add_argument("--balance", type=float, default=10000.0)
+    p_opt.add_argument("--leverage", type=int, default=10)
+    p_opt.add_argument("--params", required=True, help="e.g. X=1:10:2,Y=a|b|c")
+    p_opt.add_argument("--objective", default="sharpe_ratio",
+                       choices=["sharpe_ratio", "net_return", "sortino_ratio", "profit_factor", "win_rate"])
+    p_opt.add_argument("--method", default="grid", choices=["grid", "optuna"])
+    p_opt.add_argument("--n-jobs", type=int, default=None)
+    p_opt.add_argument("--n-trials", type=int, default=100, help="For optuna method")
+    p_opt.add_argument("--top", type=int, default=10, help="Show top N results")
+    p_opt.add_argument("--db", default=None)
+
     args = parser.parse_args()
     if args.command == "collect":
         cmd_collect(args)
@@ -140,6 +237,8 @@ def main() -> None:
         cmd_run(args)
     elif args.command == "web":
         cmd_web(args)
+    elif args.command == "optimize":
+        cmd_optimize(args)
     else:
         parser.print_help()
 

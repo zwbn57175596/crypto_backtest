@@ -22,6 +22,47 @@ class OptimizeResult:
     elapsed_seconds: float
 
 
+def _parse_number(s: str):
+    """Parse string to int or float."""
+    try:
+        val = int(s)
+        return val
+    except ValueError:
+        return float(s)
+
+
+def parse_params_string(params_str: str) -> ParamSpace:
+    """Parse CLI params string like 'X=1:10:2,Y=a|b|c' into ParamSpace."""
+    space = {}
+    for part in params_str.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        name, spec_str = part.split("=", 1)
+        name = name.strip()
+
+        if "|" in spec_str:
+            # Choice list
+            values = []
+            for v in spec_str.split("|"):
+                values.append(_parse_number(v.strip()))
+            space[name] = values
+        elif ":" in spec_str:
+            # Range: min:max:step
+            parts = spec_str.split(":")
+            if len(parts) != 3:
+                raise ValueError(f"Range must be min:max:step, got: {spec_str}")
+            min_val = _parse_number(parts[0])
+            max_val = _parse_number(parts[1])
+            step = _parse_number(parts[2])
+            space[name] = (min_val, max_val, step)
+        else:
+            # Single value
+            space[name] = [_parse_number(spec_str)]
+
+    return ParamSpace(space)
+
+
 def _load_strategy_class(path: str):
     """Load BaseStrategy subclass from file path."""
     from backtest.strategy import BaseStrategy
