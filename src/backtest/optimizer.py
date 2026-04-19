@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import itertools
+import json
 import multiprocessing
 import os
+import sqlite3
 import sys
 import time
 from dataclasses import dataclass, field
@@ -279,3 +281,54 @@ class OptunaOptimizer:
             total_trials=len(all_trials),
             elapsed_seconds=elapsed,
         )
+
+
+def save_results(
+    db_path: str,
+    strategy: str,
+    symbol: str,
+    interval: str,
+    start_date: str,
+    end_date: str,
+    result: OptimizeResult,
+) -> None:
+    """Save all optimization trials to SQLite."""
+    from datetime import datetime, timezone
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS optimize_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            interval TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            objective TEXT NOT NULL,
+            score REAL NOT NULL,
+            params_json TEXT NOT NULL,
+            report_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+
+    now = datetime.now(timezone.utc).isoformat()
+    rows = [
+        (
+            strategy, symbol, interval, start_date, end_date,
+            result.objective, trial["score"],
+            json.dumps(trial["params"]),
+            json.dumps(trial.get("report", {})),
+            now,
+        )
+        for trial in result.all_trials
+    ]
+
+    conn.executemany(
+        "INSERT INTO optimize_results "
+        "(strategy, symbol, interval, start_date, end_date, objective, score, params_json, report_json, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()

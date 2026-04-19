@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import sqlite3
 import tempfile
@@ -225,3 +226,46 @@ class TestOptunaOptimizer:
         assert result.total_trials == 6
         assert result.best_params is not None
         assert "short_period" in result.best_params
+
+
+class TestSaveResults:
+    def test_save_and_query(self):
+        from backtest.optimizer import save_results
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        db_path = tmp.name
+
+        result = OptimizeResult(
+            best_params={"X": 10, "Y": 2.5},
+            best_score=1.85,
+            all_trials=[
+                {"params": {"X": 10, "Y": 2.5}, "score": 1.85, "report": {"net_return": 0.5}},
+                {"params": {"X": 20, "Y": 3.0}, "score": 1.20, "report": {"net_return": 0.3}},
+            ],
+            objective="sharpe_ratio",
+            total_trials=2,
+            elapsed_seconds=5.0,
+        )
+
+        save_results(
+            db_path=db_path,
+            strategy="TestStrategy",
+            symbol="BTCUSDT",
+            interval="1h",
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            result=result,
+        )
+
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT strategy, score, params_json FROM optimize_results ORDER BY score DESC"
+        ).fetchall()
+        conn.close()
+        os.unlink(db_path)
+
+        assert len(rows) == 2
+        assert rows[0][0] == "TestStrategy"
+        assert rows[0][1] == 1.85
+        assert json.loads(rows[0][2]) == {"X": 10, "Y": 2.5}
