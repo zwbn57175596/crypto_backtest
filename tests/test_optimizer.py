@@ -100,3 +100,73 @@ class TestOptimizeResult:
         )
         assert r.best_score == 2.5
         assert r.total_trials == 1
+
+
+class TestGridSearchOptimizer:
+    @pytest.fixture
+    def db_with_data(self):
+        """Create a temp DB with enough 1h bars."""
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        conn = sqlite3.connect(tmp.name)
+        conn.execute("""
+            CREATE TABLE klines (
+                exchange TEXT, symbol TEXT, interval TEXT, timestamp INTEGER,
+                open REAL, high REAL, low REAL, close REAL, volume REAL,
+                PRIMARY KEY (exchange, symbol, interval, timestamp)
+            )
+        """)
+        base_ts = 1704067200000
+        for i in range(200):
+            ts = base_ts + i * 3600000
+            price = 40000 + i * 10
+            conn.execute(
+                "INSERT INTO klines VALUES (?,?,?,?,?,?,?,?,?)",
+                ("binance", "BTCUSDT", "1h", ts, price, price + 50, price - 50, price + 5, 1000.0),
+            )
+        conn.commit()
+        conn.close()
+        yield tmp.name
+        os.unlink(tmp.name)
+
+    def test_grid_search_runs_all_combinations(self, db_with_data):
+        from backtest.optimizer import GridSearchOptimizer
+
+        space = ParamSpace({"short_period": [5, 7], "long_period": [20, 25]})
+        optimizer = GridSearchOptimizer(
+            db_path=db_with_data,
+            strategy_path="strategies/example_ma_cross.py",
+            symbol="BTCUSDT",
+            interval="1h",
+            start="2024-01-01",
+            end="2024-01-08",
+            balance=10000,
+            leverage=10,
+            param_space=space,
+            objective="sharpe_ratio",
+            n_jobs=1,
+        )
+        result = optimizer.run()
+        assert result.total_trials == 4
+        assert len(result.all_trials) == 4
+        assert result.best_params in [t["params"] for t in result.all_trials]
+        assert result.all_trials[0]["score"] >= result.all_trials[-1]["score"]
+
+    def test_grid_search_parallel(self, db_with_data):
+        from backtest.optimizer import GridSearchOptimizer
+
+        space = ParamSpace({"short_period": [5, 7], "long_period": [20, 25]})
+        optimizer = GridSearchOptimizer(
+            db_path=db_with_data,
+            strategy_path="strategies/example_ma_cross.py",
+            symbol="BTCUSDT",
+            interval="1h",
+            start="2024-01-01",
+            end="2024-01-08",
+            balance=10000,
+            leverage=10,
+            param_space=space,
+            objective="sharpe_ratio",
+            n_jobs=2,
+        )
+        result = optimizer.run()
+        assert result.total_trials == 4

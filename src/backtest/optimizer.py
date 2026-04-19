@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import itertools
+import multiprocessing
+import os
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -107,3 +110,74 @@ class ParamSpace:
         names = list(self._axes.keys())
         value_lists = [self._axes[n] for n in names]
         return [dict(zip(names, combo)) for combo in itertools.product(*value_lists)]
+
+
+class GridSearchOptimizer:
+    """Grid search optimizer that runs all parameter combinations."""
+
+    def __init__(
+        self,
+        db_path: str,
+        strategy_path: str,
+        symbol: str,
+        interval: str,
+        start: str,
+        end: str,
+        balance: float = 10000.0,
+        leverage: int = 10,
+        param_space: ParamSpace | None = None,
+        objective: str = "sharpe_ratio",
+        n_jobs: int | None = None,
+    ):
+        self.db_path = db_path
+        self.strategy_path = strategy_path
+        self.symbol = symbol
+        self.interval = interval
+        self.start = f"{start} 00:00:00" if len(start) == 10 else start
+        self.end = f"{end} 23:59:59" if len(end) == 10 else end
+        self.balance = balance
+        self.leverage = leverage
+        self.param_space = param_space or ParamSpace({})
+        self.objective = objective
+        self.n_jobs = n_jobs or os.cpu_count() or 1
+
+    def run(self) -> OptimizeResult:
+        """Run grid search over all parameter combinations."""
+        combos = self.param_space.grid()
+        total = len(combos)
+        t0 = time.time()
+
+        trial_args_list = [
+            {
+                "db_path": self.db_path,
+                "strategy_path": self.strategy_path,
+                "symbol": self.symbol,
+                "interval": self.interval,
+                "exchange": "binance",
+                "start": self.start,
+                "end": self.end,
+                "balance": self.balance,
+                "leverage": self.leverage,
+                "params": params,
+                "objective": self.objective,
+            }
+            for params in combos
+        ]
+
+        if self.n_jobs == 1:
+            results = [_run_single_trial(a) for a in trial_args_list]
+        else:
+            with multiprocessing.Pool(self.n_jobs) as pool:
+                results = pool.map(_run_single_trial, trial_args_list)
+
+        results.sort(key=lambda r: r["score"], reverse=True)
+        elapsed = time.time() - t0
+
+        return OptimizeResult(
+            best_params=results[0]["params"] if results else {},
+            best_score=results[0]["score"] if results else 0.0,
+            all_trials=results,
+            objective=self.objective,
+            total_trials=total,
+            elapsed_seconds=elapsed,
+        )
