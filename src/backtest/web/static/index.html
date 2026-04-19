@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crypto Backtest Report</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         background: #0f1117; color: #e0e0e0; }
+  .header { background: #1a1a2e; padding: 16px 24px; display: flex;
+            justify-content: space-between; align-items: center;
+            border-bottom: 1px solid #333; }
+  .header h1 { font-size: 18px; color: #00d4aa; }
+  .header .meta { font-size: 13px; color: #888; }
+  .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr);
+             gap: 12px; padding: 16px 24px; }
+  .kpi { background: #1e293b; border-radius: 8px; padding: 16px; text-align: center; }
+  .kpi .label { font-size: 11px; color: #888; text-transform: uppercase; }
+  .kpi .value { font-size: 28px; font-weight: bold; margin-top: 4px; }
+  .kpi .positive { color: #22c55e; }
+  .kpi .negative { color: #ef4444; }
+  .kpi .neutral { color: #00d4aa; }
+  .charts { padding: 0 24px 24px; }
+  .chart-box { background: #1e293b; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+  .chart-box h3 { font-size: 13px; color: #aaa; margin-bottom: 8px; }
+  .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .trade-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .trade-table th { padding: 10px; text-align: left; color: #888; border-bottom: 1px solid #333; }
+  .trade-table td { padding: 10px; border-bottom: 1px solid #1a1a2e; }
+  .long { color: #22c55e; }
+  .short { color: #ef4444; }
+  .report-select { padding: 16px 24px; }
+  .report-select select { background: #1e293b; color: #e0e0e0; border: 1px solid #333;
+                          padding: 8px 12px; border-radius: 6px; font-size: 14px; }
+  #loading { text-align: center; padding: 60px; color: #888; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>Crypto Backtest</h1>
+  <div class="meta" id="meta-info"></div>
+</div>
+<div class="report-select">
+  <select id="report-selector" onchange="loadReport(this.value)">
+    <option value="">Select a report...</option>
+  </select>
+</div>
+<div id="loading">Loading reports...</div>
+<div id="content" style="display:none;">
+  <div class="kpi-row">
+    <div class="kpi"><div class="label">Net Return</div><div class="value" id="kpi-return"></div></div>
+    <div class="kpi"><div class="label">Max Drawdown</div><div class="value" id="kpi-dd"></div></div>
+    <div class="kpi"><div class="label">Sharpe Ratio</div><div class="value" id="kpi-sharpe"></div></div>
+    <div class="kpi"><div class="label">Win Rate</div><div class="value" id="kpi-winrate"></div></div>
+  </div>
+  <div class="charts">
+    <div class="chart-box"><h3>Equity Curve</h3><div id="chart-equity" style="height:300px;"></div></div>
+    <div class="chart-row">
+      <div class="chart-box"><h3>Drawdown</h3><div id="chart-dd" style="height:200px;"></div></div>
+      <div class="chart-box"><h3>Trade PnL</h3><div id="chart-pnl" style="height:200px;"></div></div>
+    </div>
+    <div class="chart-box">
+      <h3>Trade Log</h3>
+      <table class="trade-table">
+        <thead><tr><th>#</th><th>Time</th><th>Side</th><th>Price</th><th>Quantity</th><th>PnL</th><th>Fee</th></tr></thead>
+        <tbody id="trade-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<script>
+const eqChart = echarts.init(document.getElementById('chart-equity'));
+const ddChart = echarts.init(document.getElementById('chart-dd'));
+const pnlChart = echarts.init(document.getElementById('chart-pnl'));
+window.addEventListener('resize', () => { eqChart.resize(); ddChart.resize(); pnlChart.resize(); });
+
+fetch('/api/reports').then(r => r.json()).then(reports => {
+  const sel = document.getElementById('report-selector');
+  reports.forEach(r => {
+    const opt = document.createElement('option');
+    opt.value = r.id;
+    opt.textContent = `#${r.id} ${r.strategy} | ${r.symbol} ${r.interval} | ${r.created_at.slice(0,19)}`;
+    sel.appendChild(opt);
+  });
+  document.getElementById('loading').textContent = reports.length ? 'Select a report above' : 'No reports yet. Run a backtest first.';
+  if (reports.length) { sel.value = reports[0].id; loadReport(reports[0].id); }
+});
+
+function loadReport(id) {
+  if (!id) return;
+  fetch(`/api/reports/${id}`).then(r => r.json()).then(d => {
+    document.getElementById('content').style.display = '';
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('meta-info').textContent =
+      `${d.strategy} | ${d.symbol} ${d.interval} | ${d.created_at.slice(0,19)}`;
+
+    const retEl = document.getElementById('kpi-return');
+    retEl.textContent = (d.net_return * 100).toFixed(2) + '%';
+    retEl.className = 'value ' + (d.net_return >= 0 ? 'positive' : 'negative');
+
+    const ddEl = document.getElementById('kpi-dd');
+    ddEl.textContent = (d.max_drawdown * 100).toFixed(2) + '%';
+    ddEl.className = 'value negative';
+
+    const shEl = document.getElementById('kpi-sharpe');
+    shEl.textContent = d.sharpe_ratio.toFixed(2);
+    shEl.className = 'value neutral';
+
+    const wrEl = document.getElementById('kpi-winrate');
+    wrEl.textContent = (d.win_rate * 100).toFixed(1) + '%';
+    wrEl.className = 'value ' + (d.win_rate >= 0.5 ? 'positive' : 'negative');
+
+    const dates = d.equity_curve.map(p => new Date(p[0]).toLocaleDateString());
+    const vals = d.equity_curve.map(p => p[1]);
+    eqChart.setOption({
+      tooltip: { trigger: 'axis' },
+      xAxis: { type: 'category', data: dates, axisLabel: { color: '#888' }, axisLine: { lineStyle: { color: '#333' }}},
+      yAxis: { type: 'value', axisLabel: { color: '#888' }, splitLine: { lineStyle: { color: '#222' }}},
+      series: [{ data: vals, type: 'line', smooth: true, lineStyle: { color: '#22c55e' },
+                 areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,
+                   [{offset:0,color:'rgba(34,197,94,0.3)'},{offset:1,color:'rgba(34,197,94,0.02)'}])}}],
+      grid: { left: 60, right: 20, top: 10, bottom: 30 },
+    });
+
+    let peak = vals[0]; const ddVals = vals.map(v => { if(v>peak) peak=v; return -((peak-v)/peak)*100; });
+    ddChart.setOption({
+      tooltip: { trigger: 'axis' },
+      xAxis: { type: 'category', data: dates, show: false },
+      yAxis: { type: 'value', axisLabel: { color: '#888', formatter: '{value}%' }, splitLine: { lineStyle: { color: '#222' }}},
+      series: [{ data: ddVals, type: 'line', areaStyle: { color: 'rgba(239,68,68,0.15)' },
+                 lineStyle: { color: '#ef4444' }}],
+      grid: { left: 50, right: 10, top: 10, bottom: 10 },
+    });
+
+    const closingTrades = (d.trades || []).filter(t => t.pnl !== 0);
+    pnlChart.setOption({
+      tooltip: { trigger: 'axis' },
+      xAxis: { type: 'category', data: closingTrades.map((_,i) => i+1), axisLabel: { color: '#888' }},
+      yAxis: { type: 'value', axisLabel: { color: '#888' }, splitLine: { lineStyle: { color: '#222' }}},
+      series: [{ data: closingTrades.map(t => ({
+        value: t.pnl, itemStyle: { color: t.pnl >= 0 ? '#22c55e' : '#ef4444' }
+      })), type: 'bar' }],
+      grid: { left: 50, right: 10, top: 10, bottom: 30 },
+    });
+
+    const tbody = document.getElementById('trade-body');
+    tbody.innerHTML = '';
+    (d.trades || []).forEach((t, i) => {
+      const tr = document.createElement('tr');
+      const sideClass = t.side === 'buy' ? 'long' : 'short';
+      const pnlClass = t.pnl > 0 ? 'long' : t.pnl < 0 ? 'short' : '';
+      tr.innerHTML = `<td>${i+1}</td><td>${new Date(t.timestamp).toLocaleString()}</td>
+        <td class="${sideClass}">${t.side.toUpperCase()}</td>
+        <td>${t.price.toFixed(2)}</td><td>${t.quantity.toFixed(2)}</td>
+        <td class="${pnlClass}">${t.pnl.toFixed(2)}</td><td>${t.commission.toFixed(2)}</td>`;
+      tbody.appendChild(tr);
+    });
+  });
+}
+</script>
+</body>
+</html>
