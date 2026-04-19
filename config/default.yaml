@@ -1,0 +1,6 @@
+backtest:
+  initial_balance: 10000
+  leverage: 10
+  commission_rate: 0.0004
+  funding_rate: 0.0001
+  maintenance_margin: 0.005
