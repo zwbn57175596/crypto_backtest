@@ -16,9 +16,9 @@
   .header .meta { font-size: 13px; color: #888; }
   .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr);
              gap: 12px; padding: 16px 24px; }
-  .kpi { background: #1e293b; border-radius: 8px; padding: 16px; text-align: center; }
-  .kpi .label { font-size: 11px; color: #888; text-transform: uppercase; }
-  .kpi .value { font-size: 28px; font-weight: bold; margin-top: 4px; }
+  .kpi { background: #1e293b; border-radius: 8px; padding: 14px; text-align: center; }
+  .kpi .label { font-size: 11px; color: #888; letter-spacing: 0.5px; }
+  .kpi .value { font-size: 24px; font-weight: bold; margin-top: 4px; }
   .kpi .positive { color: #22c55e; }
   .kpi .negative { color: #ef4444; }
   .kpi .neutral { color: #00d4aa; }
@@ -26,14 +26,21 @@
   .chart-box { background: #1e293b; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
   .chart-box h3 { font-size: 13px; color: #aaa; margin-bottom: 8px; }
   .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .metrics-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px;
+                  padding: 0 24px 16px; }
+  .metric { background: #1e293b; border-radius: 8px; padding: 12px; }
+  .metric .label { font-size: 11px; color: #888; }
+  .metric .value { font-size: 16px; font-weight: 600; margin-top: 2px; color: #e0e0e0; }
   .trade-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .trade-table th { padding: 10px; text-align: left; color: #888; border-bottom: 1px solid #333; }
+  .trade-table th { padding: 10px; text-align: left; color: #888; border-bottom: 1px solid #333;
+                    position: sticky; top: 0; background: #1e293b; }
   .trade-table td { padding: 10px; border-bottom: 1px solid #1a1a2e; }
+  .trade-wrap { max-height: 400px; overflow-y: auto; }
   .long { color: #22c55e; }
   .short { color: #ef4444; }
   .report-select { padding: 16px 24px; }
   .report-select select { background: #1e293b; color: #e0e0e0; border: 1px solid #333;
-                          padding: 8px 12px; border-radius: 6px; font-size: 14px; }
+                          padding: 8px 12px; border-radius: 6px; font-size: 14px; width: 100%; }
   #loading { text-align: center; padding: 60px; color: #888; }
 </style>
 </head>
@@ -44,37 +51,68 @@
 </div>
 <div class="report-select">
   <select id="report-selector" onchange="loadReport(this.value)">
-    <option value="">Select a report...</option>
+    <option value="">-- 选择报告 --</option>
   </select>
 </div>
-<div id="loading">Loading reports...</div>
+<div id="loading">加载中...</div>
 <div id="content" style="display:none;">
+  <!-- 核心 KPI -->
   <div class="kpi-row">
-    <div class="kpi"><div class="label">Net Return</div><div class="value" id="kpi-return"></div></div>
-    <div class="kpi"><div class="label">Max Drawdown</div><div class="value" id="kpi-dd"></div></div>
-    <div class="kpi"><div class="label">Sharpe Ratio</div><div class="value" id="kpi-sharpe"></div></div>
-    <div class="kpi"><div class="label">Win Rate</div><div class="value" id="kpi-winrate"></div></div>
+    <div class="kpi"><div class="label">总收益率</div><div class="value" id="kpi-return"></div></div>
+    <div class="kpi"><div class="label">最大回撤</div><div class="value" id="kpi-dd"></div></div>
+    <div class="kpi"><div class="label">夏普比率</div><div class="value" id="kpi-sharpe"></div></div>
+    <div class="kpi"><div class="label">胜率</div><div class="value" id="kpi-winrate"></div></div>
   </div>
+  <!-- 详细指标 -->
+  <div class="metrics-grid" id="metrics-grid"></div>
+  <!-- 图表 -->
   <div class="charts">
-    <div class="chart-box"><h3>Equity Curve</h3><div id="chart-equity" style="height:300px;"></div></div>
+    <div class="chart-box"><h3>权益曲线</h3><div id="chart-equity" style="height:320px;"></div></div>
     <div class="chart-row">
-      <div class="chart-box"><h3>Drawdown</h3><div id="chart-dd" style="height:200px;"></div></div>
-      <div class="chart-box"><h3>Trade PnL</h3><div id="chart-pnl" style="height:200px;"></div></div>
+      <div class="chart-box"><h3>回撤曲线</h3><div id="chart-dd" style="height:220px;"></div></div>
+      <div class="chart-box"><h3>每笔盈亏</h3><div id="chart-pnl" style="height:220px;"></div></div>
     </div>
     <div class="chart-box">
-      <h3>Trade Log</h3>
-      <table class="trade-table">
-        <thead><tr><th>#</th><th>Time</th><th>Side</th><th>Price</th><th>Quantity</th><th>PnL</th><th>Fee</th></tr></thead>
-        <tbody id="trade-body"></tbody>
-      </table>
+      <h3>交易明细</h3>
+      <div class="trade-wrap">
+        <table class="trade-table">
+          <thead><tr><th>#</th><th>时间</th><th>方向</th><th>价格</th><th>数量</th><th>盈亏</th><th>手续费</th></tr></thead>
+          <tbody id="trade-body"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 </div>
+
 <script>
 const eqChart = echarts.init(document.getElementById('chart-equity'));
 const ddChart = echarts.init(document.getElementById('chart-dd'));
 const pnlChart = echarts.init(document.getElementById('chart-pnl'));
 window.addEventListener('resize', () => { eqChart.resize(); ddChart.resize(); pnlChart.resize(); });
+
+// 降采样：数据点太多时抽样到 maxPoints 个
+function downsample(dates, vals, maxPoints) {
+  if (dates.length <= maxPoints) return { dates, vals };
+  const step = Math.ceil(dates.length / maxPoints);
+  const d = [], v = [];
+  for (let i = 0; i < dates.length; i += step) {
+    d.push(dates[i]);
+    v.push(vals[i]);
+  }
+  // 确保最后一个点包含
+  if (d[d.length - 1] !== dates[dates.length - 1]) {
+    d.push(dates[dates.length - 1]);
+    v.push(vals[vals.length - 1]);
+  }
+  return { dates: d, vals: v };
+}
+
+function formatDuration(ms) {
+  const hours = Math.floor(ms / 3600000);
+  if (hours < 24) return hours + ' 小时';
+  const days = Math.floor(hours / 24);
+  return days + ' 天 ' + (hours % 24) + ' 小时';
+}
 
 fetch('/api/reports').then(r => r.json()).then(reports => {
   const sel = document.getElementById('report-selector');
@@ -84,7 +122,7 @@ fetch('/api/reports').then(r => r.json()).then(reports => {
     opt.textContent = `#${r.id} ${r.strategy} | ${r.symbol} ${r.interval} | ${r.created_at.slice(0,19)}`;
     sel.appendChild(opt);
   });
-  document.getElementById('loading').textContent = reports.length ? 'Select a report above' : 'No reports yet. Run a backtest first.';
+  document.getElementById('loading').textContent = reports.length ? '请选择一个报告' : '暂无报告，请先运行回测';
   if (reports.length) { sel.value = reports[0].id; loadReport(reports[0].id); }
 });
 
@@ -96,65 +134,110 @@ function loadReport(id) {
     document.getElementById('meta-info').textContent =
       `${d.strategy} | ${d.symbol} ${d.interval} | ${d.created_at.slice(0,19)}`;
 
+    // 核心 KPI
     const retEl = document.getElementById('kpi-return');
     retEl.textContent = (d.net_return * 100).toFixed(2) + '%';
     retEl.className = 'value ' + (d.net_return >= 0 ? 'positive' : 'negative');
 
     const ddEl = document.getElementById('kpi-dd');
-    ddEl.textContent = (d.max_drawdown * 100).toFixed(2) + '%';
+    ddEl.textContent = '-' + (d.max_drawdown * 100).toFixed(2) + '%';
     ddEl.className = 'value negative';
 
     const shEl = document.getElementById('kpi-sharpe');
     shEl.textContent = d.sharpe_ratio.toFixed(2);
-    shEl.className = 'value neutral';
+    shEl.className = 'value ' + (d.sharpe_ratio >= 1 ? 'positive' : d.sharpe_ratio >= 0 ? 'neutral' : 'negative');
 
     const wrEl = document.getElementById('kpi-winrate');
     wrEl.textContent = (d.win_rate * 100).toFixed(1) + '%';
     wrEl.className = 'value ' + (d.win_rate >= 0.5 ? 'positive' : 'negative');
 
-    const dates = d.equity_curve.map(p => new Date(p[0]).toLocaleDateString());
-    const vals = d.equity_curve.map(p => p[1]);
+    // 详细指标网格
+    const metricsData = [
+      { label: '年化收益率', value: (d.annual_return * 100).toFixed(2) + '%', color: d.annual_return >= 0 ? '#22c55e' : '#ef4444' },
+      { label: '索提诺比率', value: d.sortino_ratio === Infinity ? 'Inf' : (d.sortino_ratio || 0).toFixed(2), color: '#00d4aa' },
+      { label: '盈亏比', value: d.profit_factor === Infinity ? 'Inf' : (d.profit_factor || 0).toFixed(2), color: d.profit_factor >= 1 ? '#22c55e' : '#ef4444' },
+      { label: '总交易次数', value: d.total_trades, color: '#e0e0e0' },
+      { label: '多头交易', value: d.long_trades, color: '#22c55e' },
+      { label: '空头交易', value: d.short_trades, color: '#ef4444' },
+      { label: '平均持仓时间', value: formatDuration(d.avg_hold_time || 0), color: '#e0e0e0' },
+      { label: '最大回撤持续', value: formatDuration(d.max_dd_duration || 0), color: '#ef4444' },
+      { label: '总手续费', value: (d.total_commission || 0).toFixed(2) + ' USDT', color: '#f59e0b' },
+      { label: '总资金费用', value: (d.total_funding || 0).toFixed(2) + ' USDT', color: '#f59e0b' },
+    ];
+    const grid = document.getElementById('metrics-grid');
+    grid.innerHTML = '';
+    metricsData.forEach(m => {
+      const div = document.createElement('div');
+      div.className = 'metric';
+      div.innerHTML = `<div class="label">${m.label}</div><div class="value" style="color:${m.color}">${m.value}</div>`;
+      grid.appendChild(div);
+    });
+
+    // 权益曲线（降采样到 500 点）
+    const allDates = d.equity_curve.map(p => {
+      const dt = new Date(p[0]);
+      return dt.getFullYear() + '-' + String(dt.getMonth()+1).padStart(2,'0') + '-' + String(dt.getDate()).padStart(2,'0');
+    });
+    const allVals = d.equity_curve.map(p => p[1]);
+    const eq = downsample(allDates, allVals, 500);
+
     eqChart.setOption({
-      tooltip: { trigger: 'axis' },
-      xAxis: { type: 'category', data: dates, axisLabel: { color: '#888' }, axisLine: { lineStyle: { color: '#333' }}},
-      yAxis: { type: 'value', axisLabel: { color: '#888' }, splitLine: { lineStyle: { color: '#222' }}},
-      series: [{ data: vals, type: 'line', smooth: true, lineStyle: { color: '#22c55e' },
+      tooltip: { trigger: 'axis', formatter: params => {
+        const p = params[0];
+        return p.name + '<br/>权益: ' + p.value.toFixed(2) + ' USDT';
+      }},
+      xAxis: { type: 'category', data: eq.dates, axisLabel: { color: '#888', rotate: 30 }, axisLine: { lineStyle: { color: '#333' }}},
+      yAxis: { type: 'value', scale: true, axisLabel: { color: '#888' }, splitLine: { lineStyle: { color: '#222' }}},
+      series: [{ data: eq.vals, type: 'line', smooth: true, symbol: 'none', lineStyle: { color: '#22c55e', width: 1.5 },
                  areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,
                    [{offset:0,color:'rgba(34,197,94,0.3)'},{offset:1,color:'rgba(34,197,94,0.02)'}])}}],
-      grid: { left: 60, right: 20, top: 10, bottom: 30 },
+      grid: { left: 70, right: 20, top: 10, bottom: 50 },
+      dataZoom: [{ type: 'inside' }, { type: 'slider', height: 20, bottom: 5 }],
     });
 
-    let peak = vals[0]; const ddVals = vals.map(v => { if(v>peak) peak=v; return -((peak-v)/peak)*100; });
+    // 回撤曲线
+    let peak = eq.vals[0];
+    const ddVals = eq.vals.map(v => { if(v>peak) peak=v; return -((peak-v)/peak)*100; });
     ddChart.setOption({
-      tooltip: { trigger: 'axis' },
-      xAxis: { type: 'category', data: dates, show: false },
+      tooltip: { trigger: 'axis', formatter: params => {
+        return params[0].name + '<br/>回撤: ' + params[0].value.toFixed(2) + '%';
+      }},
+      xAxis: { type: 'category', data: eq.dates, show: false },
       yAxis: { type: 'value', axisLabel: { color: '#888', formatter: '{value}%' }, splitLine: { lineStyle: { color: '#222' }}},
-      series: [{ data: ddVals, type: 'line', areaStyle: { color: 'rgba(239,68,68,0.15)' },
-                 lineStyle: { color: '#ef4444' }}],
+      series: [{ data: ddVals, type: 'line', symbol: 'none', areaStyle: { color: 'rgba(239,68,68,0.15)' },
+                 lineStyle: { color: '#ef4444', width: 1.5 }}],
       grid: { left: 50, right: 10, top: 10, bottom: 10 },
+      dataZoom: [{ type: 'inside' }],
     });
 
+    // 每笔盈亏柱状图
     const closingTrades = (d.trades || []).filter(t => t.pnl !== 0);
     pnlChart.setOption({
-      tooltip: { trigger: 'axis' },
-      xAxis: { type: 'category', data: closingTrades.map((_,i) => i+1), axisLabel: { color: '#888' }},
+      tooltip: { trigger: 'axis', formatter: params => {
+        return '#' + params[0].name + '<br/>盈亏: ' + params[0].value.toFixed(4) + ' USDT';
+      }},
+      xAxis: { type: 'category', data: closingTrades.map((_,i) => i+1), axisLabel: { color: '#888', fontSize: 10 }},
       yAxis: { type: 'value', axisLabel: { color: '#888' }, splitLine: { lineStyle: { color: '#222' }}},
       series: [{ data: closingTrades.map(t => ({
         value: t.pnl, itemStyle: { color: t.pnl >= 0 ? '#22c55e' : '#ef4444' }
       })), type: 'bar' }],
       grid: { left: 50, right: 10, top: 10, bottom: 30 },
+      dataZoom: [{ type: 'inside' }],
     });
 
+    // 交易明细表
     const tbody = document.getElementById('trade-body');
     tbody.innerHTML = '';
     (d.trades || []).forEach((t, i) => {
       const tr = document.createElement('tr');
       const sideClass = t.side === 'buy' ? 'long' : 'short';
+      const sideText = t.side === 'buy' ? '买入' : '卖出';
       const pnlClass = t.pnl > 0 ? 'long' : t.pnl < 0 ? 'short' : '';
-      tr.innerHTML = `<td>${i+1}</td><td>${new Date(t.timestamp).toLocaleString()}</td>
-        <td class="${sideClass}">${t.side.toUpperCase()}</td>
+      tr.innerHTML = `<td>${i+1}</td>
+        <td>${new Date(t.timestamp).toLocaleString('zh-CN')}</td>
+        <td class="${sideClass}">${sideText}</td>
         <td>${t.price.toFixed(2)}</td><td>${t.quantity.toFixed(2)}</td>
-        <td class="${pnlClass}">${t.pnl.toFixed(2)}</td><td>${t.commission.toFixed(2)}</td>`;
+        <td class="${pnlClass}">${t.pnl.toFixed(4)}</td><td>${t.commission.toFixed(2)}</td>`;
       tbody.appendChild(tr);
     });
   });
