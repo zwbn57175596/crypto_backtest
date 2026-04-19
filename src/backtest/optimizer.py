@@ -387,3 +387,63 @@ def save_results(
     )
     conn.commit()
     conn.close()
+
+
+def save_top_reports(
+    result: OptimizeResult,
+    top_n: int,
+    db_path: str,
+    report_db_path: str,
+    strategy_path: str,
+    symbol: str,
+    interval: str,
+    start: str,
+    end: str,
+    balance: float,
+    leverage: int,
+) -> None:
+    """Re-run top N trials and save full reports (with equity_curve + trades) to reports table."""
+    from backtest.engine import BacktestEngine
+    from backtest.reporter import Reporter
+    from datetime import datetime, timezone
+
+    strategy_class = _load_strategy_class(strategy_path)
+    start_fmt = f"{start} 00:00:00" if len(start) == 10 else start
+    end_fmt = f"{end} 23:59:59" if len(end) == 10 else end
+
+    conn = sqlite3.connect(report_db_path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy TEXT, symbol TEXT, interval TEXT,
+            created_at TEXT, report_json TEXT
+        )
+    """)
+
+    trials = result.all_trials[:top_n]
+    now = datetime.now(timezone.utc).isoformat()
+
+    for i, trial in enumerate(trials, 1):
+        trial_class = _make_strategy(strategy_class, trial["params"])
+        engine = BacktestEngine(
+            db_path=db_path,
+            symbol=symbol,
+            interval=interval,
+            exchange="binance",
+            strategy_class=trial_class,
+            balance=balance,
+            leverage=leverage,
+            start=start_fmt,
+            end=end_fmt,
+        )
+        run_result = engine.run()
+        report = Reporter.generate(run_result)
+
+        strategy_name = f"{strategy_class.__name__}_opt{i}"
+        conn.execute(
+            "INSERT INTO reports (strategy, symbol, interval, created_at, report_json) VALUES (?,?,?,?,?)",
+            (strategy_name, symbol, interval, now, json.dumps(report)),
+        )
+
+    conn.commit()
+    conn.close()

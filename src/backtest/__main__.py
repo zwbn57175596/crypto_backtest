@@ -184,6 +184,23 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     )
     print(f"\nResults saved to database ({result.total_trials} rows).")
 
+    # Auto-save top 3 as full reports
+    from backtest.optimizer import save_top_reports
+    save_top_reports(
+        result=result,
+        top_n=min(3, len(result.all_trials)),
+        db_path=args.db or str(Path("data") / "klines.db"),
+        report_db_path=report_db,
+        strategy_path=args.strategy,
+        symbol=args.symbol,
+        interval=args.interval,
+        start=args.start,
+        end=args.end,
+        balance=args.balance,
+        leverage=args.leverage,
+    )
+    print(f"Top 3 results saved as reports. View with: python -m backtest web")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="backtest", description="Crypto futures backtester")

@@ -352,3 +352,75 @@ class TestShadowPowerOptimize:
         assert result.best_params is not None
         assert "DECISION_LEN" in result.best_params
         assert "SHADOW_FACTOR" in result.best_params
+
+
+class TestTopNAutoSave:
+    @pytest.fixture
+    def db_with_data(self):
+        """Create a temp DB with 1h bars."""
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        conn = sqlite3.connect(tmp.name)
+        conn.execute("""
+            CREATE TABLE klines (
+                exchange TEXT, symbol TEXT, interval TEXT, timestamp INTEGER,
+                open REAL, high REAL, low REAL, close REAL, volume REAL,
+                PRIMARY KEY (exchange, symbol, interval, timestamp)
+            )
+        """)
+        base_ts = 1704067200000
+        for i in range(200):
+            ts = base_ts + i * 3600000
+            price = 40000 + i * 10
+            conn.execute(
+                "INSERT INTO klines VALUES (?,?,?,?,?,?,?,?,?)",
+                ("binance", "BTCUSDT", "1h", ts, price, price + 50, price - 50, price + 5, 1000.0),
+            )
+        conn.commit()
+        conn.close()
+        yield tmp.name
+        os.unlink(tmp.name)
+
+    def test_save_top_reports(self, db_with_data):
+        from backtest.optimizer import GridSearchOptimizer, ParamSpace, save_top_reports
+
+        space = ParamSpace({"short_period": [5, 7], "long_period": [20, 25]})
+        optimizer = GridSearchOptimizer(
+            db_path=db_with_data,
+            strategy_path="strategies/example_ma_cross.py",
+            symbol="BTCUSDT",
+            interval="1h",
+            start="2024-01-01",
+            end="2024-01-08",
+            balance=10000,
+            leverage=10,
+            param_space=space,
+            objective="sharpe_ratio",
+            n_jobs=1,
+        )
+        result = optimizer.run()
+
+        report_db = db_with_data.replace(".db", "_reports.db")
+        save_top_reports(
+            result=result,
+            top_n=2,
+            db_path=db_with_data,
+            report_db_path=report_db,
+            strategy_path="strategies/example_ma_cross.py",
+            symbol="BTCUSDT",
+            interval="1h",
+            start="2024-01-01",
+            end="2024-01-08",
+            balance=10000,
+            leverage=10,
+        )
+
+        conn = sqlite3.connect(report_db)
+        rows = conn.execute("SELECT strategy, report_json FROM reports").fetchall()
+        conn.close()
+        os.unlink(report_db)
+
+        assert len(rows) == 2
+        assert "_opt1" in rows[0][0]
+        report = json.loads(rows[0][1])
+        assert "equity_curve" in report
+        assert "trades" in report
