@@ -208,11 +208,18 @@ class GridSearchOptimizer:
         ]
 
         if self.n_jobs == 1:
-            results = [_run_single_trial(a) for a in trial_args_list]
+            results = []
+            for i, args in enumerate(trial_args_list, 1):
+                results.append(_run_single_trial(args))
+                self._print_progress(i, total)
         else:
             with multiprocessing.Pool(self.n_jobs) as pool:
-                results = pool.map(_run_single_trial, trial_args_list)
+                results = []
+                for i, r in enumerate(pool.imap_unordered(_run_single_trial, trial_args_list), 1):
+                    results.append(r)
+                    self._print_progress(i, total)
 
+        print()  # newline after progress bar
         results.sort(key=lambda r: r["score"], reverse=True)
         elapsed = time.time() - t0
 
@@ -224,6 +231,13 @@ class GridSearchOptimizer:
             total_trials=total,
             elapsed_seconds=elapsed,
         )
+
+    @staticmethod
+    def _print_progress(current: int, total: int) -> None:
+        bar_len = 40
+        filled = int(bar_len * current / total)
+        bar = "#" * filled + "-" * (bar_len - filled)
+        print(f"\r[{bar}] {current}/{total}", end="", flush=True)
 
 
 class OptunaOptimizer:
