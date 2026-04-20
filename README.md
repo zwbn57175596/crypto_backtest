@@ -422,6 +422,67 @@ A: 在 `src/backtest/collector/` 中新建文件，继承 `BaseCollector` 并实
 - **httpx** — 异步 HTTP 客户端
 - **PyYAML** — 配置解析
 
+## API Reference
+
+The web server (`python -m backtest web`) exposes the following endpoints:
+
+### Pages
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /` | 回测报告查看器 |
+| `GET /optimize` | 参数优化结果页面 |
+
+### Backtest Reports
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/reports` | 列出所有回测报告 (id, strategy, symbol, interval, created_at) |
+| `GET /api/reports/{id}` | 获取单个报告详情 (含 equity_curve, trades, 所有指标) |
+
+### Optimization Results
+
+| Endpoint | Parameters | Description |
+|----------|-----------|-------------|
+| `GET /api/optimize_results` | `?strategy=X&symbol=Y` | 列出优化结果，按 score 降序。支持策略名和交易对筛选 |
+| `GET /api/optimize_results/strategies` | — | 列出所有策略/交易对组合 (含 count, best_score, latest_date) |
+
+### Response Examples
+
+**GET /api/optimize_results**
+
+```json
+[
+  {
+    "id": 1,
+    "strategy": "ShadowPowerStrategy",
+    "symbol": "BTCUSDT",
+    "interval": "15m",
+    "start_date": "2024-01-01",
+    "end_date": "2024-06-30",
+    "objective": "sharpe_ratio",
+    "score": 2.31,
+    "params_json": "{\"DECISION_LEN\": 40, \"SHADOW_FACTOR\": 2.5}",
+    "report_json": "{\"net_return\": 1.85, \"max_drawdown\": 0.12, ...}",
+    "created_at": "2026-04-20T10:00:00+00:00"
+  }
+]
+```
+
+**GET /api/optimize_results/strategies**
+
+```json
+[
+  {
+    "strategy": "ShadowPowerStrategy",
+    "symbol": "BTCUSDT",
+    "count": 120,
+    "best_score": 2.31,
+    "latest_date": "2026-04-20T10:00:00+00:00"
+  }
+]
+```
+
 ## 许可证
 
 MIT

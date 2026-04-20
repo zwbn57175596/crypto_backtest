@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pathlib import Path
 
@@ -37,6 +37,51 @@ def get_report(report_id: int, request: Request):
     report["interval"] = row["interval"]
     report["created_at"] = row["created_at"]
     return report
+
+
+@router.get("/api/optimize_results")
+def list_optimize_results(
+    request: Request,
+    strategy: str | None = Query(None),
+    symbol: str | None = Query(None),
+):
+    conn = sqlite3.connect(_get_db(request))
+    conn.row_factory = sqlite3.Row
+    query = "SELECT * FROM optimize_results WHERE 1=1"
+    params = []
+    if strategy:
+        query += " AND strategy = ?"
+        params.append(strategy)
+    if symbol:
+        query += " AND symbol = ?"
+        params.append(symbol)
+    query += " ORDER BY score DESC"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@router.get("/api/optimize_results/strategies")
+def list_optimize_strategies(request: Request):
+    conn = sqlite3.connect(_get_db(request))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT strategy, symbol, COUNT(*) as count,
+               MAX(score) as best_score, MAX(created_at) as latest_date
+        FROM optimize_results
+        GROUP BY strategy, symbol
+        ORDER BY best_score DESC
+    """).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@router.get("/optimize", response_class=HTMLResponse)
+def optimize_page():
+    html_path = Path(__file__).parent / "static" / "optimize.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="Optimize page not found")
+    return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
 
 
 @router.get("/", response_class=HTMLResponse)
