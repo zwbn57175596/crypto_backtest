@@ -25,9 +25,23 @@ class SimExchange:
         self._trades: list[Trade] = []
         self._equity_curve: list[tuple[int, float]] = []
 
+    @property
+    def is_bankrupt(self) -> bool:
+        return self.balance <= 0 and not self._positions
+
     def submit_order(
         self, symbol: str, side: str, type_: str, quantity: float, price: float | None = None
     ) -> Order:
+        if self.is_bankrupt:
+            return Order(
+                id="rejected",
+                symbol=symbol,
+                side=side,
+                type=type_,
+                quantity=quantity,
+                price=price,
+                status="canceled",
+            )
         order = Order(
             id=uuid.uuid4().hex[:8],
             symbol=symbol,

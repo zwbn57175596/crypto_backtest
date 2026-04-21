@@ -47,6 +47,7 @@ class ConsecutiveReverseStrategy(BaseStrategy):
 
         pos = self.position
         if pos is None:
+            self._profit_candle_count = 0  # reset stale count from external close (e.g. liquidation)
             self._try_open(direction)
         elif self._is_profit_candle(pos, direction):
             self._profit_candle_count += 1

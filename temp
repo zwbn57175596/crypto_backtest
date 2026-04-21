@@ -1,0 +1,31 @@
+CONSECUTIVE_THRESHOLD = 1～15      # 连续K线触发阈值
+    POSITION_MULTIPLIER = 1.001～3      # 仓位递增倍数
+    INITIAL_POSITION_PCT = 0.005～0.3    # 初始仓位比例（占余额）
+    PROFIT_CANDLE_THRESHOLD = 1～15    # 盈利K线平仓阈值
+    LEVERAGE = 3～50                  # 杠杆倍数
+
+
+
+CONSECUTIVE_THRESHOLD = 1～15: 步长 1      # 连续K线触发阈值
+    POSITION_MULTIPLIER = 1 ～ 3 步长 0.1      # 仓位递增倍数
+    INITIAL_POSITION_PCT = 0.05～0.30 步长 0.01    # 初始仓位比例（占余额）
+    PROFIT_CANDLE_THRESHOLD = 1～15: 步长 1    # 盈利K线平仓阈值
+    LEVERAGE = 3～50: 步长 1                  # 杠杆倍数
+
+
+  # BTCUSDT                                                                                                                       
+  python -m backtest optimize \                                                                                                                                 
+    --strategy strategies/consecutive_reverse.py \
+    --save-top 1500 \                                                                                                              
+    --interval 1h \
+    --start 2020-01-01 \                                                                                                                                        
+    --end 2026-03-30 \                                      
+    --method numba-grid \
+    --params "CONSECUTIVE_THRESHOLD=1:15:1,POSITION_MULTIPLIER=1.0:3.0:0.1,INITIAL_POSITION_PCT=0.05:0.30:0.01,PROFIT_CANDLE_THRESHOLD=1:15:1,LEVERAGE=3:50:1" \
+    --objective sharpe_ratio \
+    --balance 1000 \
+    --symbol BTCUSDT
+
+    
+python -m backtest optimize --strategy strategies/consecutive_reverse.py --save-top 1500 --interval 1h --start 2020-01-01 --end 2026-03-30 --method numba-grid --params "CONSECUTIVE_THRESHOLD=1:15:1,POSITION_MULTIPLIER=1.0:3.0:0.1,INITIAL_POSITION_PCT=0.05:0.30:0.01,PROFIT_CANDLE_THRESHOLD=1:15:1,LEVERAGE=3:50:1" --objective sharpe_ratio --balance 1000 --symbol BTCUSDT
+   

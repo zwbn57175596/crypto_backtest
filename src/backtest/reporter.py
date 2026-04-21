@@ -27,8 +27,8 @@ class Reporter:
 
         max_dd, max_dd_duration = Reporter._calc_drawdown(equity_curve)
         returns = Reporter._calc_returns(equity_curve)
-        sharpe = Reporter._calc_sharpe(returns)
-        sortino = Reporter._calc_sortino(returns)
+        sharpe = Reporter._calc_sharpe(returns, net_return=net_return)
+        sortino = Reporter._calc_sortino(returns, net_return=net_return)
 
         if len(equity_curve) >= 2:
             days = (equity_curve[-1][0] - equity_curve[0][0]) / (1000 * 86400)
@@ -84,7 +84,9 @@ class Reporter:
                 for i in range(1, len(curve)) if curve[i-1][1] > 0]
 
     @staticmethod
-    def _calc_sharpe(returns: list[float], risk_free: float = 0.0) -> float:
+    def _calc_sharpe(returns: list[float], risk_free: float = 0.0, net_return: float = 0.0) -> float:
+        if net_return <= -1.0:
+            return -999.0
         if len(returns) < 2:
             return 0.0
         mean = sum(returns) / len(returns)
@@ -95,7 +97,9 @@ class Reporter:
         return (mean - risk_free) * math.sqrt(365 * 24) / std
 
     @staticmethod
-    def _calc_sortino(returns: list[float], risk_free: float = 0.0) -> float:
+    def _calc_sortino(returns: list[float], risk_free: float = 0.0, net_return: float = 0.0) -> float:
+        if net_return <= -1.0:
+            return -999.0
         if len(returns) < 2:
             return 0.0
         mean = sum(returns) / len(returns)
