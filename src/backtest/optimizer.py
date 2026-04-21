@@ -372,9 +372,8 @@ def _numba_worker(args: tuple) -> dict:
     }
 
     score = metrics.get(objective, 0.0)
-    # Cap inf/nan values
     if not isinstance(score, (int, float)) or score != score:  # nan check
-        score = 0.0
+        score = float("-inf")
     elif score > 1e9:
         score = 1e9
 
@@ -424,7 +423,7 @@ def _numba_worker_shared(args: tuple) -> dict:
 
     score = metrics.get(objective, 0.0)
     if not isinstance(score, (int, float)) or score != score:
-        score = 0.0
+        score = float("-inf")
     elif score > 1e9:
         score = 1e9
 
@@ -525,7 +524,7 @@ class NumbaGridOptimizer:
                 }
                 score = metrics.get(self.objective, 0.0)
                 if score != score or abs(score) > 1e9:
-                    score = 0.0
+                    score = float("-inf")
                 results.append({"params": params, "score": score, "report": metrics})
                 if i % 1000 == 0 or i == total:
                     self._print_progress(i, total)
@@ -586,8 +585,9 @@ def save_results(
     start_date: str,
     end_date: str,
     result: OptimizeResult,
+    top_n: int | None = 1000,
 ) -> None:
-    """Save all optimization trials to SQLite."""
+    """Save top N optimization trials to SQLite (default: top 1000)."""
     from datetime import datetime, timezone
 
     conn = sqlite3.connect(db_path)
@@ -607,6 +607,7 @@ def save_results(
         )
     """)
 
+    trials = result.all_trials[:top_n] if top_n else result.all_trials
     now = datetime.now(timezone.utc).isoformat()
     rows = [
         (
@@ -616,7 +617,7 @@ def save_results(
             json.dumps(trial.get("report", {}), sort_keys=True),
             now,
         )
-        for trial in result.all_trials
+        for trial in trials
     ]
 
     conn.executemany(

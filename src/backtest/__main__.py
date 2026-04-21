@@ -188,6 +188,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
 
     # Save to database
     report_db = str(Path(args.db or str(Path("data") / "klines.db")).parent / "reports.db")
+    save_n = args.save_top if args.save_top > 0 else None
     save_results(
         db_path=report_db,
         strategy=strategy_class.__name__,
@@ -196,14 +197,16 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         start_date=args.start,
         end_date=args.end,
         result=result,
+        top_n=save_n,
     )
-    print(f"\nResults saved to database ({result.total_trials} rows).")
+    saved = save_n if save_n else result.total_trials
+    print(f"\nResults saved to database ({min(saved, result.total_trials)} rows).")
 
-    # Auto-save top 3 as full reports
+    # Auto-save top N as full reports
     from backtest.optimizer import save_top_reports
     save_top_reports(
         result=result,
-        top_n=min(3, len(result.all_trials)),
+        top_n=min(args.report_top, len(result.all_trials)),
         db_path=args.db or str(Path("data") / "klines.db"),
         report_db_path=report_db,
         strategy_path=args.strategy,
@@ -214,7 +217,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         balance=args.balance,
         leverage=args.leverage,
     )
-    print(f"Top 3 results saved as reports. View with: python -m backtest web")
+    print(f"Top {args.report_top} results saved as reports. View with: python -m backtest web")
 
 
 def main() -> None:
@@ -259,7 +262,9 @@ def main() -> None:
     p_opt.add_argument("--method", default="grid", choices=["grid", "optuna", "numba-grid"])
     p_opt.add_argument("--n-jobs", type=int, default=None)
     p_opt.add_argument("--n-trials", type=int, default=100, help="For optuna method")
-    p_opt.add_argument("--top", type=int, default=10, help="Show top N results")
+    p_opt.add_argument("--top", type=int, default=10, help="Show top N results in console")
+    p_opt.add_argument("--save-top", type=int, default=1000, help="Save top N trials to DB (0=all)")
+    p_opt.add_argument("--report-top", type=int, default=3, help="Save top N full reports (with equity curve)")
     p_opt.add_argument("--db", default=None)
 
     args = parser.parse_args()

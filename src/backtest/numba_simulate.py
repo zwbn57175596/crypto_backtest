@@ -296,7 +296,7 @@ def simulate(
             if dd > max_dd:
                 max_dd = dd
 
-        if prev_equity > 0 and i > 0:
+        if prev_equity > 0 and equity > 0 and i > 0:
             ret = (equity - prev_equity) / prev_equity
             sum_ret += ret
             sum_ret_sq += ret * ret
@@ -326,6 +326,7 @@ def simulate(
 
         # Strategy decision
         if pos_side == _NO_POS:
+            profit_candle_count = 0  # reset stale count from external close (e.g. liquidation)
             # Try open
             qty = _calc_quantity(
                 consecutive_count, threshold, balance, initial_pct, multiplier, sizing_leverage
@@ -407,7 +408,9 @@ def simulate(
 
     # Sharpe ratio (annualized, hourly returns assumed)
     sharpe = 0.0
-    if n_returns >= 2:
+    if net_return <= -1.0:
+        sharpe = -999.0
+    elif n_returns >= 2:
         mean_ret = sum_ret / n_returns
         variance = (sum_ret_sq / n_returns) - (mean_ret * mean_ret)
         variance = variance * n_returns / (n_returns - 1)
@@ -417,7 +420,9 @@ def simulate(
 
     # Sortino ratio
     sortino = 0.0
-    if n_returns >= 2:
+    if net_return <= -1.0:
+        sortino = -999.0
+    elif n_returns >= 2:
         mean_ret = sum_ret / n_returns
         if n_downside > 0:
             down_std = math.sqrt(sum_down_sq / n_downside)
