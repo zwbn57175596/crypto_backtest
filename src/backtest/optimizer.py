@@ -612,8 +612,8 @@ def save_results(
         (
             strategy, symbol, interval, start_date, end_date,
             result.objective, trial["score"],
-            json.dumps(trial["params"]),
-            json.dumps(trial.get("report", {})),
+            json.dumps(trial["params"], sort_keys=True),
+            json.dumps(trial.get("report", {}), sort_keys=True),
             now,
         )
         for trial in result.all_trials
@@ -641,46 +641,47 @@ def _write_report_with_link(
 ) -> None:
     """Insert one report row, linking to the matching optimize_results row."""
     conn = sqlite3.connect(report_db_path)
+    try:
+        # Ensure reports table exists
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy TEXT, symbol TEXT, interval TEXT,
+                created_at TEXT, report_json TEXT
+            )
+        """)
 
-    # Ensure reports table exists
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            strategy TEXT, symbol TEXT, interval TEXT,
-            created_at TEXT, report_json TEXT
+        # Idempotent migration — add column if not present
+        try:
+            conn.execute("ALTER TABLE reports ADD COLUMN optimize_result_id INTEGER")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+        # Look up matching optimize_results row
+        params_json = json.dumps(params, sort_keys=True)
+        optimize_result_id = None
+        try:
+            row = conn.execute(
+                """SELECT id FROM optimize_results
+                   WHERE params_json = ? AND strategy = ? AND symbol = ? AND interval = ?
+                   ORDER BY created_at DESC LIMIT 1""",
+                (params_json, base_strategy, symbol, interval),
+            ).fetchone()
+            optimize_result_id = row[0] if row else None
+        except sqlite3.OperationalError:
+            pass  # optimize_results table doesn't exist yet
+
+        conn.execute(
+            """INSERT INTO reports
+               (strategy, symbol, interval, created_at, report_json, optimize_result_id)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (strategy_name, symbol, interval, created_at,
+             json.dumps(report, sort_keys=True), optimize_result_id),
         )
-    """)
-
-    # Idempotent migration — add column if not present
-    try:
-        conn.execute("ALTER TABLE reports ADD COLUMN optimize_result_id INTEGER")
         conn.commit()
-    except sqlite3.OperationalError:
-        pass  # column already exists
-
-    # Look up matching optimize_results row
-    params_json = json.dumps(params)
-    optimize_result_id = None
-    try:
-        row = conn.execute(
-            """SELECT id FROM optimize_results
-               WHERE params_json = ? AND strategy = ? AND symbol = ? AND interval = ?
-               ORDER BY created_at DESC LIMIT 1""",
-            (params_json, base_strategy, symbol, interval),
-        ).fetchone()
-        optimize_result_id = row[0] if row else None
-    except sqlite3.OperationalError:
-        pass  # optimize_results table doesn't exist yet
-
-    conn.execute(
-        """INSERT INTO reports
-           (strategy, symbol, interval, created_at, report_json, optimize_result_id)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (strategy_name, symbol, interval, created_at,
-         json.dumps(report), optimize_result_id),
-    )
-    conn.commit()
-    conn.close()
+    finally:
+        conn.close()
 
 
 def save_top_reports(
