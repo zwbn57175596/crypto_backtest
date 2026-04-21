@@ -26,16 +26,28 @@ def list_reports(request: Request):
 def get_report(report_id: int, request: Request):
     conn = sqlite3.connect(_get_db(request))
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+    row = conn.execute(
+        """SELECT r.report_json, r.strategy, r.symbol, r.interval, r.created_at,
+                  o.params_json AS optimize_params_json,
+                  o.score       AS optimize_score,
+                  o.objective   AS optimize_objective
+           FROM reports r
+           LEFT JOIN optimize_results o ON r.optimize_result_id = o.id
+           WHERE r.id = ?""",
+        (report_id,),
+    ).fetchone()
     conn.close()
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found")
     report = json.loads(row["report_json"])
-    report["id"] = row["id"]
+    report["id"] = report_id
     report["strategy"] = row["strategy"]
     report["symbol"] = row["symbol"]
     report["interval"] = row["interval"]
     report["created_at"] = row["created_at"]
+    report["optimize_params"] = json.loads(row["optimize_params_json"]) if row["optimize_params_json"] else None
+    report["optimize_score"] = row["optimize_score"]
+    report["optimize_objective"] = row["optimize_objective"]
     return report
 
 
