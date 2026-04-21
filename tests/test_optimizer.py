@@ -424,3 +424,74 @@ class TestTopNAutoSave:
         report = json.loads(rows[0][1])
         assert "equity_curve" in report
         assert "trades" in report
+
+
+def test_save_top_reports_links_optimize_result_id(tmp_path):
+    """reports.optimize_result_id must point to the matching optimize_results row."""
+    import json, sqlite3
+    from backtest.optimizer import OptimizeResult, save_results, save_top_reports
+
+    report_db = str(tmp_path / "reports.db")
+    klines_db = str(tmp_path / "klines.db")  # unused by save_top_reports directly
+
+    # Build a minimal OptimizeResult with two trials
+    trials = [
+        {"params": {"CONSECUTIVE_THRESHOLD": 3}, "score": 2.0,
+         "report": {"sharpe_ratio": 2.0, "net_return": 0.5, "max_drawdown": 0.1}},
+        {"params": {"CONSECUTIVE_THRESHOLD": 5}, "score": 1.5,
+         "report": {"sharpe_ratio": 1.5, "net_return": 0.3, "max_drawdown": 0.2}},
+    ]
+    result = OptimizeResult(
+        best_params=trials[0]["params"],
+        best_score=2.0,
+        all_trials=trials,
+        objective="sharpe_ratio",
+        total_trials=2,
+        elapsed_seconds=1.0,
+    )
+
+    # save_results writes to optimize_results table
+    save_results(
+        db_path=report_db,
+        strategy="TestStrategy",
+        symbol="BTCUSDT",
+        interval="1h",
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+        result=result,
+    )
+
+    # Verify the optimize_results rows exist with expected IDs
+    conn = sqlite3.connect(report_db)
+    rows = conn.execute(
+        "SELECT id, params_json FROM optimize_results ORDER BY score DESC"
+    ).fetchall()
+    conn.close()
+
+    assert len(rows) == 2
+    top_id = rows[0][0]  # highest score row
+    top_params = json.loads(rows[0][1])
+    assert top_params == {"CONSECUTIVE_THRESHOLD": 3}
+
+    # Now test the linkage write helper directly
+    from backtest.optimizer import _write_report_with_link
+    full_report = {"sharpe_ratio": 2.0, "net_return": 0.5, "equity_curve": [], "trades": []}
+    _write_report_with_link(
+        report_db_path=report_db,
+        strategy_name="TestStrategy_opt1",
+        symbol="BTCUSDT",
+        interval="1h",
+        created_at="2026-01-01T00:00:00+00:00",
+        report=full_report,
+        params={"CONSECUTIVE_THRESHOLD": 3},
+        base_strategy="TestStrategy",
+    )
+
+    conn = sqlite3.connect(report_db)
+    row = conn.execute(
+        "SELECT optimize_result_id FROM reports WHERE strategy = 'TestStrategy_opt1'"
+    ).fetchone()
+    conn.close()
+
+    assert row is not None
+    assert row[0] == top_id

@@ -41,6 +41,17 @@
   .report-select { padding: 16px 24px; }
   .report-select select { background: #1e293b; color: #e0e0e0; border: 1px solid #333;
                           padding: 8px 12px; border-radius: 6px; font-size: 14px; width: 100%; }
+  .opt-params-card { background: #1e293b; border-radius: 8px; padding: 16px;
+                     margin: 0 24px 12px; }
+  .opt-params-card .card-header { display: flex; justify-content: space-between;
+                                   align-items: center; margin-bottom: 12px; }
+  .opt-params-card .card-title { font-size: 13px; color: #aaa; }
+  .opt-params-card .card-score { font-size: 13px; color: #00d4aa; }
+  .opt-params-card .param-row { display: flex; justify-content: space-between;
+                                 padding: 5px 0; border-bottom: 1px solid #2a3a4a; }
+  .opt-params-card .param-row:last-child { border-bottom: none; }
+  .opt-params-card .param-name { font-size: 12px; color: #888; }
+  .opt-params-card .param-value { font-size: 13px; font-weight: 600; color: #e0e0e0; }
   #loading { text-align: center; padding: 60px; color: #888; }
 </style>
 </head>
@@ -71,6 +82,14 @@
   </div>
   <!-- 详细指标 -->
   <div class="metrics-grid" id="metrics-grid"></div>
+  <!-- 优化参数 -->
+  <div id="opt-params-card" class="opt-params-card" style="display:none;">
+    <div class="card-header">
+      <span class="card-title">优化参数</span>
+      <span class="card-score" id="opt-score-label"></span>
+    </div>
+    <div id="opt-params-body"></div>
+  </div>
   <!-- 图表 -->
   <div class="charts">
     <div class="chart-box"><h3>权益曲线</h3><div id="chart-equity" style="height:320px;"></div></div>
@@ -187,6 +206,24 @@ function loadReport(id) {
       div.innerHTML = `<div class="label">${m.label}</div><div class="value" style="color:${m.color}">${m.value}</div>`;
       grid.appendChild(div);
     });
+
+    // 优化参数卡片
+    const optCard = document.getElementById('opt-params-card');
+    if (d.optimize_params) {
+      const scoreLabel = document.getElementById('opt-score-label');
+      scoreLabel.textContent = `score: ${d.optimize_score.toFixed(4)} | ${d.optimize_objective}`;
+      const body = document.getElementById('opt-params-body');
+      body.innerHTML = '';
+      Object.entries(d.optimize_params).forEach(([k, v]) => {
+        const row = document.createElement('div');
+        row.className = 'param-row';
+        row.innerHTML = `<span class="param-name">${k}</span><span class="param-value">${v}</span>`;
+        body.appendChild(row);
+      });
+      optCard.style.display = '';
+    } else {
+      optCard.style.display = 'none';
+    }
 
     // 权益曲线（降采样到 500 点）
     const allDates = d.equity_curve.map(p => {

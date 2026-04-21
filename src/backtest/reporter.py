@@ -32,7 +32,10 @@ class Reporter:
 
         if len(equity_curve) >= 2:
             days = (equity_curve[-1][0] - equity_curve[0][0]) / (1000 * 86400)
-            annual_return = (1 + net_return) ** (365 / max(days, 1)) - 1 if days > 0 else 0.0
+            if days > 0 and (1 + net_return) > 0:
+                annual_return = (1 + net_return) ** (365 / max(days, 1)) - 1
+            else:
+                annual_return = -1.0 if net_return <= -1 else 0.0
         else:
             annual_return = 0.0
 

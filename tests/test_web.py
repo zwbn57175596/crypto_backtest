@@ -10,10 +10,21 @@ def report_db(tmp_path):
     db_path = str(tmp_path / "reports.db")
     conn = sqlite3.connect(db_path)
     conn.execute("""
+        CREATE TABLE optimize_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy TEXT NOT NULL, symbol TEXT NOT NULL,
+            interval TEXT NOT NULL, start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL, objective TEXT NOT NULL,
+            score REAL NOT NULL, params_json TEXT NOT NULL,
+            report_json TEXT NOT NULL, created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
         CREATE TABLE reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             strategy TEXT, symbol TEXT, interval TEXT,
-            created_at TEXT, report_json TEXT
+            created_at TEXT, report_json TEXT,
+            optimize_result_id INTEGER
         )
     """)
     report = {
@@ -23,8 +34,8 @@ def report_db(tmp_path):
         "trades": [],
     }
     conn.execute(
-        "INSERT INTO reports (strategy, symbol, interval, created_at, report_json) VALUES (?,?,?,?,?)",
-        ("TestStrategy", "BTCUSDT", "1h", "2024-01-01T00:00:00", json.dumps(report)),
+        "INSERT INTO reports (strategy, symbol, interval, created_at, report_json, optimize_result_id) VALUES (?,?,?,?,?,?)",
+        ("TestStrategy", "BTCUSDT", "1h", "2024-01-01T00:00:00", json.dumps(report), None),
     )
     conn.commit()
     conn.close()
@@ -162,3 +173,78 @@ def test_optimize_page(opt_client):
     resp = opt_client.get("/optimize")
     assert resp.status_code == 200
     assert "echarts" in resp.text.lower()
+
+
+@pytest.fixture
+def db_with_linked_report(tmp_path):
+    """DB with a report linked to an optimize_results row via optimize_result_id."""
+    db_path = str(tmp_path / "reports.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE optimize_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy TEXT NOT NULL, symbol TEXT NOT NULL,
+            interval TEXT NOT NULL, start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL, objective TEXT NOT NULL,
+            score REAL NOT NULL, params_json TEXT NOT NULL,
+            report_json TEXT NOT NULL, created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO optimize_results (strategy,symbol,interval,start_date,end_date,objective,score,params_json,report_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("TestStrategy", "BTCUSDT", "1h", "2024-01-01", "2024-12-31",
+         "sharpe_ratio", 2.04,
+         json.dumps({"CONSECUTIVE_THRESHOLD": 5, "POSITION_MULTIPLIER": 1.1}, sort_keys=True),
+         json.dumps({}),
+         "2026-04-21T00:00:00+00:00"),
+    )
+    conn.execute("""
+        CREATE TABLE reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy TEXT, symbol TEXT, interval TEXT,
+            created_at TEXT, report_json TEXT,
+            optimize_result_id INTEGER
+        )
+    """)
+    report = {
+        "net_return": 0.5, "max_drawdown": 0.1, "sharpe_ratio": 2.04,
+        "win_rate": 0.6, "total_trades": 20, "equity_curve": [], "trades": [],
+    }
+    conn.execute(
+        "INSERT INTO reports (strategy,symbol,interval,created_at,report_json,optimize_result_id) VALUES (?,?,?,?,?,?)",
+        ("TestStrategy_opt1", "BTCUSDT", "1h", "2026-04-21T00:00:00+00:00",
+         json.dumps(report), 1),
+    )
+    # Unlinked report (standalone run)
+    conn.execute(
+        "INSERT INTO reports (strategy,symbol,interval,created_at,report_json,optimize_result_id) VALUES (?,?,?,?,?,?)",
+        ("TestStrategy", "BTCUSDT", "1h", "2026-04-21T01:00:00+00:00",
+         json.dumps(report), None),
+    )
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+@pytest.fixture
+def linked_client(db_with_linked_report):
+    app = create_app(db_with_linked_report)
+    return TestClient(app)
+
+
+def test_get_report_includes_optimize_params_when_linked(linked_client):
+    resp = linked_client.get("/api/reports/1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["optimize_params"] == {"CONSECUTIVE_THRESHOLD": 5, "POSITION_MULTIPLIER": 1.1}
+    assert data["optimize_score"] == pytest.approx(2.04)
+    assert data["optimize_objective"] == "sharpe_ratio"
+
+
+def test_get_report_optimize_params_null_when_unlinked(linked_client):
+    resp = linked_client.get("/api/reports/2")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["optimize_params"] is None
+    assert data["optimize_score"] is None
+    assert data["optimize_objective"] is None

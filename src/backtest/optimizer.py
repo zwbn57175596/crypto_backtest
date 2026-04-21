@@ -338,6 +338,246 @@ class OptunaOptimizer:
         )
 
 
+def _numba_worker(args: tuple) -> dict:
+    """Worker function for NumbaGridOptimizer multiprocessing."""
+    from backtest.numba_simulate import simulate
+
+    bars, params, sizing_leverage, exchange_leverage, commission_rate, \
+        funding_rate, maintenance_margin, initial_balance, objective = args
+
+    result = simulate(
+        bars,
+        threshold=int(params.get("CONSECUTIVE_THRESHOLD", 5)),
+        multiplier=float(params.get("POSITION_MULTIPLIER", 1.1)),
+        initial_pct=float(params.get("INITIAL_POSITION_PCT", 0.01)),
+        profit_threshold=int(params.get("PROFIT_CANDLE_THRESHOLD", 1)),
+        sizing_leverage=sizing_leverage,
+        exchange_leverage=exchange_leverage,
+        commission_rate=commission_rate,
+        funding_rate=funding_rate,
+        maintenance_margin=maintenance_margin,
+        initial_balance=initial_balance,
+    )
+
+    # Map result tuple to metric names
+    metrics = {
+        "net_return": result[0],
+        "annual_return": result[1],
+        "max_drawdown": result[2],
+        "sharpe_ratio": result[3],
+        "sortino_ratio": result[4],
+        "win_rate": result[5],
+        "profit_factor": result[6],
+        "total_trades": result[7],
+    }
+
+    score = metrics.get(objective, 0.0)
+    # Cap inf/nan values
+    if not isinstance(score, (int, float)) or score != score:  # nan check
+        score = 0.0
+    elif score > 1e9:
+        score = 1e9
+
+    return {
+        "params": params,
+        "score": score,
+        "report": metrics,
+    }
+
+
+# Shared bars array for multiprocessing (avoids pickling per worker)
+_shared_bars = None
+
+
+def _numba_worker_shared(args: tuple) -> dict:
+    """Worker using module-level shared bars to avoid pickling large arrays."""
+    global _shared_bars
+    from backtest.numba_simulate import simulate
+
+    params, sizing_leverage, exchange_leverage, commission_rate, \
+        funding_rate, maintenance_margin, initial_balance, objective = args
+
+    result = simulate(
+        _shared_bars,
+        threshold=int(params.get("CONSECUTIVE_THRESHOLD", 5)),
+        multiplier=float(params.get("POSITION_MULTIPLIER", 1.1)),
+        initial_pct=float(params.get("INITIAL_POSITION_PCT", 0.01)),
+        profit_threshold=int(params.get("PROFIT_CANDLE_THRESHOLD", 1)),
+        sizing_leverage=sizing_leverage,
+        exchange_leverage=exchange_leverage,
+        commission_rate=commission_rate,
+        funding_rate=funding_rate,
+        maintenance_margin=maintenance_margin,
+        initial_balance=initial_balance,
+    )
+
+    metrics = {
+        "net_return": result[0],
+        "annual_return": result[1],
+        "max_drawdown": result[2],
+        "sharpe_ratio": result[3],
+        "sortino_ratio": result[4],
+        "win_rate": result[5],
+        "profit_factor": result[6],
+        "total_trades": result[7],
+    }
+
+    score = metrics.get(objective, 0.0)
+    if not isinstance(score, (int, float)) or score != score:
+        score = 0.0
+    elif score > 1e9:
+        score = 1e9
+
+    return {"params": params, "score": score, "report": metrics}
+
+
+def _init_shared_bars(bars):
+    """Initializer for multiprocessing.Pool to set shared bars."""
+    global _shared_bars
+    _shared_bars = bars
+
+
+class NumbaGridOptimizer:
+    """Grid search optimizer using Numba JIT-compiled simulation.
+
+    ~50-200x faster than GridSearchOptimizer for ConsecutiveReverse strategy.
+    """
+
+    def __init__(
+        self,
+        db_path: str,
+        strategy_path: str,
+        symbol: str,
+        interval: str,
+        start: str,
+        end: str,
+        balance: float = 10000.0,
+        leverage: int = 10,
+        param_space: ParamSpace | None = None,
+        objective: str = "sharpe_ratio",
+        n_jobs: int | None = None,
+        commission_rate: float = 0.0004,
+        funding_rate: float = 0.0001,
+        maintenance_margin: float = 0.005,
+    ):
+        self.db_path = db_path
+        self.strategy_path = strategy_path
+        self.symbol = symbol
+        self.interval = interval
+        self.start = f"{start} 00:00:00" if len(start) == 10 else start
+        self.end = f"{end} 23:59:59" if len(end) == 10 else end
+        self.balance = balance
+        self.leverage = leverage
+        self.param_space = param_space or ParamSpace({})
+        self.objective = objective
+        self.n_jobs = n_jobs or os.cpu_count() or 1
+        self.commission_rate = commission_rate
+        self.funding_rate = funding_rate
+        self.maintenance_margin = maintenance_margin
+
+    def run(self) -> OptimizeResult:
+        """Run grid search with Numba-accelerated simulation."""
+        from datetime import datetime, timezone
+        from backtest.numba_simulate import load_bars, simulate
+
+        # Pre-load bars once
+        start_ts = int(
+            datetime.strptime(self.start, "%Y-%m-%d %H:%M:%S")
+            .replace(tzinfo=timezone.utc).timestamp() * 1000
+        )
+        end_ts = int(
+            datetime.strptime(self.end, "%Y-%m-%d %H:%M:%S")
+            .replace(tzinfo=timezone.utc).timestamp() * 1000
+        )
+        bars = load_bars(self.db_path, self.symbol, self.interval, "binance", start_ts, end_ts)
+        print(f"Loaded {bars.shape[0]} bars, warming up JIT...", flush=True)
+
+        # Warm up JIT compilation
+        simulate(bars[:10], 5, 1.1, 0.01, 1, 50, 50, 0.0004, 0.0001, 0.005, 1000.0)
+
+        combos = self.param_space.grid()
+        total = len(combos)
+        t0 = time.time()
+
+        if self.n_jobs == 1:
+            # Single process - fastest for small grids
+            results = []
+            for i, params in enumerate(combos, 1):
+                sizing_lev = int(params.get("LEVERAGE", self.leverage))
+                result = simulate(
+                    bars,
+                    threshold=int(params.get("CONSECUTIVE_THRESHOLD", 5)),
+                    multiplier=float(params.get("POSITION_MULTIPLIER", 1.1)),
+                    initial_pct=float(params.get("INITIAL_POSITION_PCT", 0.01)),
+                    profit_threshold=int(params.get("PROFIT_CANDLE_THRESHOLD", 1)),
+                    sizing_leverage=sizing_lev,
+                    exchange_leverage=self.leverage,
+                    commission_rate=self.commission_rate,
+                    funding_rate=self.funding_rate,
+                    maintenance_margin=self.maintenance_margin,
+                    initial_balance=self.balance,
+                )
+                metrics = {
+                    "net_return": result[0], "annual_return": result[1],
+                    "max_drawdown": result[2], "sharpe_ratio": result[3],
+                    "sortino_ratio": result[4], "win_rate": result[5],
+                    "profit_factor": result[6], "total_trades": result[7],
+                }
+                score = metrics.get(self.objective, 0.0)
+                if score != score or abs(score) > 1e9:
+                    score = 0.0
+                results.append({"params": params, "score": score, "report": metrics})
+                if i % 1000 == 0 or i == total:
+                    self._print_progress(i, total)
+        else:
+            # Multiprocessing with shared bars
+            trial_args = [
+                (
+                    params,
+                    int(params.get("LEVERAGE", self.leverage)),
+                    self.leverage,
+                    self.commission_rate,
+                    self.funding_rate,
+                    self.maintenance_margin,
+                    self.balance,
+                    self.objective,
+                )
+                for params in combos
+            ]
+
+            with multiprocessing.Pool(
+                self.n_jobs, initializer=_init_shared_bars, initargs=(bars,)
+            ) as pool:
+                results = []
+                for i, r in enumerate(
+                    pool.imap_unordered(_numba_worker_shared, trial_args, chunksize=256), 1
+                ):
+                    results.append(r)
+                    if i % 1000 == 0 or i == total:
+                        self._print_progress(i, total)
+
+        print()
+        results.sort(key=lambda r: r["score"], reverse=True)
+        elapsed = time.time() - t0
+
+        return OptimizeResult(
+            best_params=results[0]["params"] if results else {},
+            best_score=results[0]["score"] if results else 0.0,
+            all_trials=results,
+            objective=self.objective,
+            total_trials=total,
+            elapsed_seconds=elapsed,
+        )
+
+    @staticmethod
+    def _print_progress(current: int, total: int) -> None:
+        bar_len = 40
+        filled = int(bar_len * current / total)
+        bar = "#" * filled + "-" * (bar_len - filled)
+        pct = current / total * 100
+        print(f"\r[{bar}] {current}/{total} ({pct:.1f}%)", end="", flush=True)
+
+
 def save_results(
     db_path: str,
     strategy: str,
@@ -372,8 +612,8 @@ def save_results(
         (
             strategy, symbol, interval, start_date, end_date,
             result.objective, trial["score"],
-            json.dumps(trial["params"]),
-            json.dumps(trial.get("report", {})),
+            json.dumps(trial["params"], sort_keys=True),
+            json.dumps(trial.get("report", {}), sort_keys=True),
             now,
         )
         for trial in result.all_trials
@@ -387,6 +627,61 @@ def save_results(
     )
     conn.commit()
     conn.close()
+
+
+def _write_report_with_link(
+    report_db_path: str,
+    strategy_name: str,
+    symbol: str,
+    interval: str,
+    created_at: str,
+    report: dict,
+    params: dict,
+    base_strategy: str,
+) -> None:
+    """Insert one report row, linking to the matching optimize_results row."""
+    conn = sqlite3.connect(report_db_path)
+    try:
+        # Ensure reports table exists
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy TEXT, symbol TEXT, interval TEXT,
+                created_at TEXT, report_json TEXT
+            )
+        """)
+
+        # Idempotent migration — add column if not present
+        try:
+            conn.execute("ALTER TABLE reports ADD COLUMN optimize_result_id INTEGER")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+        # Look up matching optimize_results row
+        params_json = json.dumps(params, sort_keys=True)
+        optimize_result_id = None
+        try:
+            row = conn.execute(
+                """SELECT id FROM optimize_results
+                   WHERE params_json = ? AND strategy = ? AND symbol = ? AND interval = ?
+                   ORDER BY created_at DESC LIMIT 1""",
+                (params_json, base_strategy, symbol, interval),
+            ).fetchone()
+            optimize_result_id = row[0] if row else None
+        except sqlite3.OperationalError:
+            pass  # optimize_results table doesn't exist yet
+
+        conn.execute(
+            """INSERT INTO reports
+               (strategy, symbol, interval, created_at, report_json, optimize_result_id)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (strategy_name, symbol, interval, created_at,
+             json.dumps(report, sort_keys=True), optimize_result_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def save_top_reports(
@@ -411,6 +706,7 @@ def save_top_reports(
     start_fmt = f"{start} 00:00:00" if len(start) == 10 else start
     end_fmt = f"{end} 23:59:59" if len(end) == 10 else end
 
+    # Ensure reports table exists
     conn = sqlite3.connect(report_db_path)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS reports (
@@ -419,6 +715,8 @@ def save_top_reports(
             created_at TEXT, report_json TEXT
         )
     """)
+    conn.commit()
+    conn.close()
 
     trials = result.all_trials[:top_n]
     now = datetime.now(timezone.utc).isoformat()
@@ -440,10 +738,13 @@ def save_top_reports(
         report = Reporter.generate(run_result)
 
         strategy_name = f"{strategy_class.__name__}_opt{i}"
-        conn.execute(
-            "INSERT INTO reports (strategy, symbol, interval, created_at, report_json) VALUES (?,?,?,?,?)",
-            (strategy_name, symbol, interval, now, json.dumps(report)),
+        _write_report_with_link(
+            report_db_path=report_db_path,
+            strategy_name=strategy_name,
+            symbol=symbol,
+            interval=interval,
+            created_at=now,
+            report=report,
+            params=trial["params"],
+            base_strategy=strategy_class.__name__,
         )
-
-    conn.commit()
-    conn.close()
