@@ -629,6 +629,60 @@ def save_results(
     conn.close()
 
 
+def _write_report_with_link(
+    report_db_path: str,
+    strategy_name: str,
+    symbol: str,
+    interval: str,
+    created_at: str,
+    report: dict,
+    params: dict,
+    base_strategy: str,
+) -> None:
+    """Insert one report row, linking to the matching optimize_results row."""
+    conn = sqlite3.connect(report_db_path)
+
+    # Ensure reports table exists
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy TEXT, symbol TEXT, interval TEXT,
+            created_at TEXT, report_json TEXT
+        )
+    """)
+
+    # Idempotent migration — add column if not present
+    try:
+        conn.execute("ALTER TABLE reports ADD COLUMN optimize_result_id INTEGER")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+    # Look up matching optimize_results row
+    params_json = json.dumps(params)
+    optimize_result_id = None
+    try:
+        row = conn.execute(
+            """SELECT id FROM optimize_results
+               WHERE params_json = ? AND strategy = ? AND symbol = ? AND interval = ?
+               ORDER BY created_at DESC LIMIT 1""",
+            (params_json, base_strategy, symbol, interval),
+        ).fetchone()
+        optimize_result_id = row[0] if row else None
+    except sqlite3.OperationalError:
+        pass  # optimize_results table doesn't exist yet
+
+    conn.execute(
+        """INSERT INTO reports
+           (strategy, symbol, interval, created_at, report_json, optimize_result_id)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (strategy_name, symbol, interval, created_at,
+         json.dumps(report), optimize_result_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 def save_top_reports(
     result: OptimizeResult,
     top_n: int,
@@ -651,6 +705,7 @@ def save_top_reports(
     start_fmt = f"{start} 00:00:00" if len(start) == 10 else start
     end_fmt = f"{end} 23:59:59" if len(end) == 10 else end
 
+    # Ensure reports table exists
     conn = sqlite3.connect(report_db_path)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS reports (
@@ -659,6 +714,8 @@ def save_top_reports(
             created_at TEXT, report_json TEXT
         )
     """)
+    conn.commit()
+    conn.close()
 
     trials = result.all_trials[:top_n]
     now = datetime.now(timezone.utc).isoformat()
@@ -680,10 +737,13 @@ def save_top_reports(
         report = Reporter.generate(run_result)
 
         strategy_name = f"{strategy_class.__name__}_opt{i}"
-        conn.execute(
-            "INSERT INTO reports (strategy, symbol, interval, created_at, report_json) VALUES (?,?,?,?,?)",
-            (strategy_name, symbol, interval, now, json.dumps(report)),
+        _write_report_with_link(
+            report_db_path=report_db_path,
+            strategy_name=strategy_name,
+            symbol=symbol,
+            interval=interval,
+            created_at=now,
+            report=report,
+            params=trial["params"],
+            base_strategy=strategy_class.__name__,
         )
-
-    conn.commit()
-    conn.close()
