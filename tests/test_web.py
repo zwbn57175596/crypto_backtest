@@ -248,3 +248,71 @@ def test_get_report_optimize_params_null_when_unlinked(linked_client):
     assert data["optimize_params"] is None
     assert data["optimize_score"] is None
     assert data["optimize_objective"] is None
+
+
+@pytest.fixture
+def db_with_batches(tmp_path):
+    """Database with optimize_results that have batch_ids."""
+    db = str(tmp_path / "reports.db")
+    conn = sqlite3.connect(db)
+    conn.execute("""
+        CREATE TABLE optimize_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy TEXT NOT NULL, symbol TEXT NOT NULL, interval TEXT NOT NULL,
+            start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+            objective TEXT NOT NULL, score REAL NOT NULL,
+            params_json TEXT NOT NULL, report_json TEXT NOT NULL,
+            created_at TEXT NOT NULL, batch_id TEXT
+        )
+    """)
+    # Batch 1: 2 trials
+    conn.execute(
+        "INSERT INTO optimize_results (strategy,symbol,interval,start_date,end_date,objective,score,params_json,report_json,created_at,batch_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        ("MaCross","BTCUSDT","1h","2026-01-01","2026-03-31","sharpe_ratio",1.5,'{"x":1}','{"net_return":0.1}',
+         "2026-04-15T14:00:00+00:00","20260415T140000_MaCross_BTCUSDT"),
+    )
+    conn.execute(
+        "INSERT INTO optimize_results (strategy,symbol,interval,start_date,end_date,objective,score,params_json,report_json,created_at,batch_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        ("MaCross","BTCUSDT","1h","2026-01-01","2026-03-31","sharpe_ratio",1.2,'{"x":2}','{"net_return":0.05}',
+         "2026-04-15T14:00:00+00:00","20260415T140000_MaCross_BTCUSDT"),
+    )
+    # Batch 2: 1 trial
+    conn.execute(
+        "INSERT INTO optimize_results (strategy,symbol,interval,start_date,end_date,objective,score,params_json,report_json,created_at,batch_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        ("MaCross","BTCUSDT","1h","2026-01-01","2026-06-30","sharpe_ratio",2.3,'{"x":3}','{"net_return":0.2}',
+         "2026-04-23T12:00:00+00:00","20260423T120000_MaCross_BTCUSDT"),
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+@pytest.fixture
+def batch_client(db_with_batches):
+    app = create_app(db_with_batches)
+    return TestClient(app)
+
+
+def test_get_batches(batch_client):
+    resp = batch_client.get("/api/optimize_results/batches?strategy=MaCross&symbol=BTCUSDT")
+    assert resp.status_code == 200
+    batches = resp.json()
+    assert len(batches) == 2
+    # Ordered by created_at DESC — newest batch first
+    assert batches[0]["batch_id"] == "20260423T120000_MaCross_BTCUSDT"
+    assert batches[0]["count"] == 1
+    assert batches[0]["best_score"] == 2.3
+    assert batches[0]["start_date"] == "2026-01-01"
+    assert batches[0]["end_date"] == "2026-06-30"
+    assert batches[0]["objective"] == "sharpe_ratio"
+    assert batches[0]["batch_number"] == 2
+    assert batches[1]["batch_id"] == "20260415T140000_MaCross_BTCUSDT"
+    assert batches[1]["count"] == 2
+    assert batches[1]["best_score"] == 1.5
+    assert batches[1]["batch_number"] == 1
+
+
+def test_get_batches_empty(batch_client):
+    resp = batch_client.get("/api/optimize_results/batches?strategy=NoExist&symbol=BTCUSDT")
+    assert resp.status_code == 200
+    assert resp.json() == []

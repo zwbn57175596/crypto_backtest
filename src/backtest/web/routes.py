@@ -51,6 +51,45 @@ def get_report(report_id: int, request: Request):
     return report
 
 
+@router.get("/api/optimize_results/batches")
+def list_optimize_batches(
+    request: Request,
+    strategy: str = Query(...),
+    symbol: str = Query(...),
+):
+    conn = sqlite3.connect(_get_db(request))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT batch_id,
+               MIN(created_at) AS created_at,
+               COUNT(*) AS count,
+               MAX(score) AS best_score,
+               objective,
+               start_date,
+               end_date
+        FROM optimize_results
+        WHERE strategy = ? AND symbol = ? AND batch_id IS NOT NULL
+        GROUP BY batch_id
+        ORDER BY created_at ASC
+    """, (strategy, symbol)).fetchall()
+    conn.close()
+
+    batches = []
+    for i, row in enumerate(rows):
+        batches.append({
+            "batch_id": row["batch_id"],
+            "batch_number": i + 1,
+            "created_at": row["created_at"],
+            "count": row["count"],
+            "best_score": row["best_score"],
+            "objective": row["objective"],
+            "start_date": row["start_date"],
+            "end_date": row["end_date"],
+        })
+    batches.reverse()  # newest first for display
+    return batches
+
+
 @router.get("/api/optimize_results")
 def list_optimize_results(
     request: Request,
