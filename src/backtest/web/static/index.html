@@ -454,17 +454,14 @@ function loadReport(id) {
                      orient: 'horizontal', left: 'center', bottom: 0,
                      textStyle: { color: '#888' },
                      formatter: v => v.toFixed(1) + '%',
-                     inRange: { color: ['#c0392b', '#e74c3c', '#2a1a1a', '#1a2a1a', '#27ae60', '#2ecc71'] } },
+                     inRange: { color: ['#d63031', '#e17055', '#636e72', '#55efc4', '#00b894'] } },
         series: [{ type: 'heatmap', data: heatData,
                    label: { show: true, fontSize: 11,
                              formatter: p => {
                                const v = p.data[2];
                                return (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
                              },
-                             color: p => {
-                               const v = p.data ? p.data[2] : 0;
-                               return Math.abs(v) > absMax * 0.6 ? '#fff' : '#ccc';
-                             } },
+                             color: '#e0e0e0' },
                    emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.5)' } } }],
         grid: { left: 50, right: 20, top: 10, bottom: 50 },
       }, true);
