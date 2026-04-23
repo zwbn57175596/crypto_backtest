@@ -130,6 +130,17 @@
 </div>
 
 <div class="table-wrap">
+  <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
+    <div style="position:relative;">
+      <button id="col-toggle-btn" onclick="toggleColMenu()"
+              style="background:#1e293b;color:#aaa;border:1px solid #333;padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer;">
+        列设置 ▾
+      </button>
+      <div id="col-menu" style="display:none;position:absolute;right:0;top:100%;background:#1e293b;border:1px solid #333;border-radius:6px;padding:8px;z-index:10;min-width:180px;">
+        <div id="col-menu-items"></div>
+      </div>
+    </div>
+  </div>
   <div class="table-container">
     <div class="table-scroll">
       <table class="opt-table">
@@ -151,6 +162,7 @@ let sortCol = 'score', sortDir = 'desc';
 let selectedRow = null;
 let allBatches = [];
 let selectedBatchIds = [];
+let visibleCols = JSON.parse(localStorage.getItem('opt_visible_cols') || 'null');
 
 fetch('/api/optimize_results/strategies').then(r => r.json()).then(strategies => {
   const sel = document.getElementById('filter-strategy');
@@ -468,19 +480,68 @@ function renderHeatmap() {
   }, true);
 }
 
+function getAllColumnDefs() {
+  const paramNames = getParamNames();
+  const cols = [{ key: 'rank', label: 'Rank' }];
+  paramNames.forEach(p => cols.push({ key: 'param_' + p, label: p }));
+  cols.push({ key: 'score', label: 'Score' });
+  cols.push({ key: 'net_return', label: 'Return' });
+  cols.push({ key: 'max_drawdown', label: 'MaxDD' });
+  cols.push({ key: 'sharpe_ratio', label: 'Sharpe' });
+  cols.push({ key: 'win_rate', label: 'Win Rate' });
+  cols.push({ key: 'sortino_ratio', label: 'Sortino' });
+  cols.push({ key: 'profit_factor', label: 'Profit Factor' });
+  cols.push({ key: 'total_trades', label: 'Trades' });
+  cols.push({ key: 'annual_return', label: 'Annual Return' });
+  return cols;
+}
+
+function getVisibleCols() {
+  if (visibleCols) return visibleCols;
+  const paramNames = getParamNames();
+  return ['rank', ...paramNames.map(p => 'param_' + p), 'score', 'net_return', 'max_drawdown', 'sharpe_ratio', 'win_rate'];
+}
+
+function toggleColMenu() {
+  const menu = document.getElementById('col-menu');
+  menu.style.display = menu.style.display === 'none' ? '' : 'none';
+  if (menu.style.display !== 'none') renderColMenu();
+}
+
+function renderColMenu() {
+  const allCols = getAllColumnDefs();
+  const visible = getVisibleCols();
+  const container = document.getElementById('col-menu-items');
+  container.innerHTML = '';
+  allCols.forEach(col => {
+    const label = document.createElement('label');
+    label.style.cssText = 'display:block;padding:3px 0;font-size:12px;color:#e0e0e0;cursor:pointer;';
+    const checked = visible.includes(col.key) ? 'checked' : '';
+    label.innerHTML = `<input type="checkbox" ${checked} onchange="onColToggle('${col.key}', this.checked)"
+                        style="accent-color:#00d4aa;margin-right:6px;"> ${col.label}`;
+    container.appendChild(label);
+  });
+}
+
+function onColToggle(key, checked) {
+  let cols = getVisibleCols();
+  if (checked && !cols.includes(key)) cols.push(key);
+  if (!checked) cols = cols.filter(c => c !== key);
+  visibleCols = cols;
+  localStorage.setItem('opt_visible_cols', JSON.stringify(cols));
+  renderTable();
+}
+
 function renderTable() {
   const paramNames = getParamNames();
   const thead = document.getElementById('table-head');
   const tbody = document.getElementById('table-body');
+  const visible = getVisibleCols();
+  const allCols = getAllColumnDefs();
+  const shownCols = allCols.filter(c => visible.includes(c.key));
 
   let headerHtml = '<tr>';
-  headerHtml += mkTh('Rank', 'rank');
-  paramNames.forEach(p => { headerHtml += mkTh(p, 'param_' + p); });
-  headerHtml += mkTh('Score', 'score');
-  headerHtml += mkTh('Return', 'net_return');
-  headerHtml += mkTh('MaxDD', 'max_drawdown');
-  headerHtml += mkTh('Sharpe', 'sharpe_ratio');
-  headerHtml += mkTh('Win Rate', 'win_rate');
+  shownCols.forEach(c => { headerHtml += mkTh(c.label, c.key); });
   headerHtml += '</tr>';
   thead.innerHTML = headerHtml;
 
@@ -501,16 +562,30 @@ function renderTable() {
     tr.dataset.idx = origIdx;
     tr.onclick = () => highlightRow(origIdx);
 
-    let html = `<td>${i+1}</td>`;
-    paramNames.forEach(p => { html += `<td>${d.params[p]}</td>`; });
-    html += `<td><b>${d.score.toFixed(4)}</b></td>`;
-    const ret = (d.report.net_return || 0) * 100;
-    html += `<td class="${ret >= 0 ? 'positive' : 'negative'}">${ret >= 0 ? '+' : ''}${ret.toFixed(1)}%</td>`;
-    const dd = (d.report.max_drawdown || 0) * 100;
-    html += `<td class="negative">${dd.toFixed(1)}%</td>`;
-    html += `<td>${(d.report.sharpe_ratio || 0).toFixed(2)}</td>`;
-    const wr = (d.report.win_rate || 0) * 100;
-    html += `<td>${wr.toFixed(1)}%</td>`;
+    let html = '';
+    shownCols.forEach(c => {
+      if (c.key === 'rank') html += `<td>${i+1}</td>`;
+      else if (c.key.startsWith('param_')) html += `<td>${d.params[c.key.slice(6)]}</td>`;
+      else if (c.key === 'score') html += `<td><b>${d.score.toFixed(4)}</b></td>`;
+      else if (c.key === 'net_return') {
+        const ret = (d.report.net_return || 0) * 100;
+        html += `<td class="${ret >= 0 ? 'positive' : 'negative'}">${ret >= 0 ? '+' : ''}${ret.toFixed(1)}%</td>`;
+      } else if (c.key === 'max_drawdown') {
+        html += `<td class="negative">${((d.report.max_drawdown || 0) * 100).toFixed(1)}%</td>`;
+      } else if (c.key === 'sharpe_ratio') {
+        html += `<td>${(d.report.sharpe_ratio || 0).toFixed(2)}</td>`;
+      } else if (c.key === 'win_rate') {
+        html += `<td>${((d.report.win_rate || 0) * 100).toFixed(1)}%</td>`;
+      } else if (c.key === 'sortino_ratio') {
+        html += `<td>${(d.report.sortino_ratio || 0).toFixed(2)}</td>`;
+      } else if (c.key === 'profit_factor') {
+        html += `<td>${(d.report.profit_factor || 0).toFixed(2)}</td>`;
+      } else if (c.key === 'total_trades') {
+        html += `<td>${d.report.total_trades || 0}</td>`;
+      } else if (c.key === 'annual_return') {
+        html += `<td>${((d.report.annual_return || 0) * 100).toFixed(1)}%</td>`;
+      }
+    });
     tr.innerHTML = html;
     tbody.appendChild(tr);
 
@@ -518,7 +593,7 @@ function renderTable() {
     expandTr.className = 'expand-row';
     expandTr.style.display = 'none';
     expandTr.dataset.expandFor = origIdx;
-    const colSpan = paramNames.length + 6;
+    const colSpan = shownCols.length;
     let expandHtml = `<td colspan="${colSpan}"><div class="metrics">`;
     const metrics = [
       ['Sortino', (d.report.sortino_ratio || 0).toFixed(2)],
@@ -629,6 +704,12 @@ function applyParamFilters() {
     render3dScatter();
   }
 }
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('#col-toggle-btn') && !e.target.closest('#col-menu')) {
+    document.getElementById('col-menu').style.display = 'none';
+  }
+});
 
 window.addEventListener('resize', () => {
   if (scatterChart) scatterChart.resize();
