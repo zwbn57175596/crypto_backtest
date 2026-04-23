@@ -47,6 +47,19 @@
   .expand-row .metric-item .val { color: #e0e0e0; font-weight: 600; }
   .table-scroll { max-height: 500px; overflow-y: auto; }
   .no-data { text-align: center; padding: 60px; color: #888; }
+  .batch-panel { padding: 0 24px 12px; }
+  .batch-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .batch-list { display: flex; flex-direction: column; gap: 6px; }
+  .batch-item { display: flex; align-items: center; gap: 10px; background: #1e293b;
+                border-radius: 6px; padding: 8px 12px; font-size: 12px; cursor: pointer; }
+  .batch-item:hover { background: #253347; }
+  .batch-item input { accent-color: #00d4aa; }
+  .batch-item .batch-info { flex: 1; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  .batch-item .batch-num { color: #00d4aa; font-weight: 600; min-width: 30px; }
+  .batch-item .batch-date { color: #888; }
+  .batch-item .batch-count { color: #888; }
+  .batch-item .batch-best { color: #22c55e; }
+  .batch-item .batch-range { color: #666; }
   @media (max-width: 900px) { .charts-row { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -66,6 +79,16 @@
   <select id="filter-symbol"><option value="">全部交易对</option></select>
   <span class="badge" id="badge-objective"></span>
   <span class="badge" id="badge-count"></span>
+</div>
+
+<div id="batch-panel" class="batch-panel" style="display:none;">
+  <div class="batch-header">
+    <span style="color:#aaa;font-size:13px;">优化批次</span>
+    <label style="font-size:12px;color:#888;cursor:pointer;">
+      <input type="checkbox" id="batch-select-all"> 全选
+    </label>
+  </div>
+  <div id="batch-list" class="batch-list"></div>
 </div>
 
 <div class="charts-row">
@@ -101,6 +124,8 @@ let allData = [];
 let scatterChart, heatmapChart;
 let sortCol = 'score', sortDir = 'desc';
 let selectedRow = null;
+let allBatches = [];
+let selectedBatchIds = [];
 
 fetch('/api/optimize_results/strategies').then(r => r.json()).then(strategies => {
   const sel = document.getElementById('filter-strategy');
@@ -119,11 +144,99 @@ fetch('/api/optimize_results/strategies').then(r => r.json()).then(strategies =>
     opt.textContent = sym;
     symSel.appendChild(opt);
   });
-  loadData();
+  loadBatches();
 });
 
-document.getElementById('filter-strategy').onchange = loadData;
-document.getElementById('filter-symbol').onchange = loadData;
+document.getElementById('filter-strategy').onchange = function() { loadBatches(); };
+document.getElementById('filter-symbol').onchange = function() { loadBatches(); };
+
+function loadBatches() {
+  const stratVal = document.getElementById('filter-strategy').value;
+  if (!stratVal) {
+    document.getElementById('batch-panel').style.display = 'none';
+    selectedBatchIds = [];
+    loadData();
+    return;
+  }
+  const [strat, sym] = stratVal.split('|');
+  fetch(`/api/optimize_results/batches?strategy=${encodeURIComponent(strat)}&symbol=${encodeURIComponent(sym)}`)
+    .then(r => r.json())
+    .then(batches => {
+      allBatches = batches;
+      if (batches.length === 0) {
+        document.getElementById('batch-panel').style.display = 'none';
+        selectedBatchIds = [];
+        loadData();
+        return;
+      }
+      renderBatchList(batches);
+      document.getElementById('batch-panel').style.display = '';
+
+      // Read batch selection from URL params
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlBatches = urlParams.get('batches');
+      if (urlBatches) {
+        selectedBatchIds = urlBatches.split(',');
+      } else {
+        // Default: select newest batch only
+        selectedBatchIds = [batches[0].batch_id];
+      }
+      updateBatchCheckboxes();
+      loadData();
+    });
+}
+
+function renderBatchList(batches) {
+  const list = document.getElementById('batch-list');
+  list.innerHTML = '';
+  batches.forEach(b => {
+    const div = document.createElement('div');
+    div.className = 'batch-item';
+    div.innerHTML = `
+      <input type="checkbox" value="${b.batch_id}" onchange="onBatchToggle()">
+      <div class="batch-info">
+        <span class="batch-num">#${b.batch_number}</span>
+        <span class="batch-date">${b.created_at.slice(0,16).replace('T',' ')}</span>
+        <span class="batch-count">(${b.count}组)</span>
+        <span class="batch-best">best=${b.best_score.toFixed(2)}</span>
+        <span class="batch-range">${b.start_date.slice(5)} ~ ${b.end_date.slice(5)}</span>
+      </div>`;
+    list.appendChild(div);
+  });
+
+  document.getElementById('batch-select-all').onchange = function() {
+    selectedBatchIds = this.checked ? allBatches.map(b => b.batch_id) : [];
+    updateBatchCheckboxes();
+    updateBatchUrl();
+    loadData();
+  };
+}
+
+function onBatchToggle() {
+  const checkboxes = document.querySelectorAll('#batch-list input[type=checkbox]');
+  selectedBatchIds = [];
+  checkboxes.forEach(cb => { if (cb.checked) selectedBatchIds.push(cb.value); });
+  document.getElementById('batch-select-all').checked = selectedBatchIds.length === allBatches.length;
+  updateBatchUrl();
+  loadData();
+}
+
+function updateBatchCheckboxes() {
+  const checkboxes = document.querySelectorAll('#batch-list input[type=checkbox]');
+  checkboxes.forEach(cb => { cb.checked = selectedBatchIds.includes(cb.value); });
+  document.getElementById('batch-select-all').checked =
+    selectedBatchIds.length === allBatches.length && allBatches.length > 0;
+}
+
+function updateBatchUrl() {
+  const url = new URL(window.location);
+  if (selectedBatchIds.length > 0 && selectedBatchIds.length < allBatches.length) {
+    url.searchParams.set('batches', selectedBatchIds.join(','));
+  } else {
+    url.searchParams.delete('batches');
+  }
+  history.replaceState(null, '', url);
+}
 
 function loadData() {
   const stratVal = document.getElementById('filter-strategy').value;
@@ -134,6 +247,10 @@ function loadData() {
     url += `strategy=${encodeURIComponent(strat)}&symbol=${encodeURIComponent(sym)}`;
   } else if (symVal) {
     url += `symbol=${encodeURIComponent(symVal)}`;
+  }
+  // Add batch_ids filter
+  if (selectedBatchIds.length > 0) {
+    url += `&batch_ids=${selectedBatchIds.map(encodeURIComponent).join(',')}`;
   }
   fetch(url).then(r => r.json()).then(data => {
     allData = data.map(d => ({
