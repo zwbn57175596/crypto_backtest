@@ -329,17 +329,51 @@ function loadReport(id) {
 
     eqChart.setOption({
       tooltip: { trigger: 'axis', formatter: params => {
-        const p = params[0];
-        return p.name + '<br/>权益: ' + p.value.toFixed(2) + ' USDT';
+        let html = params[0].name + '<br/>';
+        params.forEach(p => {
+          if (p.seriesName === '策略权益') {
+            html += '策略: ' + p.value.toFixed(2) + ' USDT<br/>';
+          } else if (p.seriesName === 'Buy & Hold') {
+            html += 'Buy & Hold: ' + p.value.toFixed(2) + ' USDT';
+          }
+        });
+        return html;
       }},
       xAxis: { type: 'category', data: eq.dates, axisLabel: { color: '#888', rotate: 30 }, axisLine: { lineStyle: { color: '#333' }}},
       yAxis: { type: 'value', scale: true, axisLabel: { color: '#888' }, splitLine: { lineStyle: { color: '#222' }}},
-      series: [{ data: eq.vals, type: 'line', smooth: true, symbol: 'none', lineStyle: { color: '#22c55e', width: 1.5 },
+      legend: { data: ['策略权益'], textStyle: { color: '#888' }, top: 0, right: 20 },
+      series: [{ name: '策略权益', data: eq.vals, type: 'line', smooth: true, symbol: 'none', lineStyle: { color: '#22c55e', width: 1.5 },
                  areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,
                    [{offset:0,color:'rgba(34,197,94,0.3)'},{offset:1,color:'rgba(34,197,94,0.02)'}])}}],
       grid: { left: 70, right: 20, top: 10, bottom: 50 },
       dataZoom: [{ type: 'inside' }, { type: 'slider', height: 20, bottom: 5 }],
     });
+
+    // Fetch and overlay Buy & Hold baseline
+    fetch(`/api/reports/${id}/benchmark`).then(r => r.json()).then(bm => {
+      if (!bm.benchmark || bm.benchmark.length === 0) return;
+      const bmDates = bm.benchmark.map(p => {
+        const dt = new Date(p[0]);
+        return dt.getFullYear() + '-' + String(dt.getMonth()+1).padStart(2,'0') + '-' + String(dt.getDate()).padStart(2,'0');
+      });
+      const bmVals = bm.benchmark.map(p => p[1]);
+      const chartWidth = document.getElementById('chart-equity').clientWidth || 800;
+      const maxPts = Math.max(200, Math.min(2000, chartWidth));
+      const bmSampled = downsample(bmDates, bmVals, maxPts);
+
+      const currentOption = eqChart.getOption();
+      eqChart.setOption({
+        legend: { data: ['策略权益', 'Buy & Hold'], textStyle: { color: '#888' }, top: 0, right: 20 },
+        series: [
+          { name: '策略权益', data: currentOption.series[0].data, type: 'line', smooth: true, symbol: 'none',
+            lineStyle: { color: '#22c55e', width: 1.5 },
+            areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,
+              [{offset:0,color:'rgba(34,197,94,0.3)'},{offset:1,color:'rgba(34,197,94,0.02)'}]) }},
+          { name: 'Buy & Hold', data: bmSampled.vals, type: 'line', smooth: true, symbol: 'none',
+            lineStyle: { color: '#f59e0b', width: 1.5, type: 'dashed' } },
+        ],
+      });
+    }).catch(() => {});  // Silently ignore if benchmark fails
 
     // 回撤曲线
     let peak = eq.vals[0];
