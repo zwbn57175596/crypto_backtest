@@ -66,6 +66,15 @@
   .slider-item .range-values { display: flex; justify-content: space-between; font-size: 11px; color: #00d4aa; }
   .slider-item input[type=range] { width: 48%; accent-color: #00d4aa; }
   .slider-row { display: flex; gap: 8px; align-items: center; }
+  .section { margin-bottom: 0; }
+  .section-bar { display: flex; align-items: center; gap: 8px; padding: 10px 24px;
+                 cursor: pointer; user-select: none; }
+  .section-bar:hover { background: #1a1a2e; }
+  .section-bar .arrow { font-size: 10px; color: #555; transition: transform 0.2s; width: 12px; }
+  .section-bar .arrow.collapsed { transform: rotate(-90deg); }
+  .section-bar .title { font-size: 13px; color: #aaa; font-weight: 600; }
+  .section-body { overflow: hidden; transition: max-height 0.3s ease; }
+  .section-body.collapsed { max-height: 0 !important; }
   @media (max-width: 900px) { .charts-row { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -87,66 +96,96 @@
   <span class="badge" id="badge-count"></span>
 </div>
 
-<div id="batch-panel" class="batch-panel" style="display:none;">
-  <div class="batch-header">
-    <span style="color:#aaa;font-size:13px;">优化批次</span>
-    <label style="font-size:12px;color:#888;cursor:pointer;">
+<div id="batch-panel" class="section" style="display:none;">
+  <div class="section-bar" onclick="toggleSection(this)">
+    <span class="arrow">▼</span><span class="title">优化批次</span>
+    <label style="font-size:12px;color:#888;cursor:pointer;margin-left:auto;" onclick="event.stopPropagation();">
       <input type="checkbox" id="batch-select-all"> 全选
     </label>
   </div>
-  <div id="batch-list" class="batch-list"></div>
-</div>
-
-<div id="param-sliders" class="param-sliders" style="display:none;padding:0 24px 12px;">
-  <div style="font-size:13px;color:#aaa;margin-bottom:8px;">参数范围筛选</div>
-  <div id="slider-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px;"></div>
-</div>
-
-<div class="charts-row">
-  <div class="chart-box">
-    <h3>风险-收益散点图</h3>
-    <div id="chart-scatter" style="height:300px;"></div>
-  </div>
-  <div class="chart-box">
-    <h3>参数热力图</h3>
-    <div class="chart-controls">
-      <select id="heatmap-x"></select>
-      <select id="heatmap-y"></select>
+  <div class="section-body">
+    <div style="padding:0 24px 12px;">
+      <div id="batch-list" class="batch-list"></div>
     </div>
-    <div id="chart-heatmap" style="height:270px;"></div>
   </div>
 </div>
 
-<div id="chart-3d-wrap" class="charts-row" style="display:none;">
-  <div class="chart-box" style="grid-column: span 2;">
-    <h3>3D 参数空间</h3>
-    <div class="chart-controls">
-      <select id="scatter3d-x"></select>
-      <select id="scatter3d-y"></select>
-      <select id="scatter3d-z"></select>
+<div id="param-sliders" class="section" style="display:none;">
+  <div class="section-bar" onclick="toggleSection(this)">
+    <span class="arrow">▼</span><span class="title">参数范围筛选</span>
+  </div>
+  <div class="section-body">
+    <div style="padding:0 24px 12px;">
+      <div id="slider-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px;"></div>
     </div>
-    <div id="chart-scatter3d" style="height:400px;"></div>
   </div>
 </div>
 
-<div class="table-wrap">
-  <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
-    <div style="position:relative;">
-      <button id="col-toggle-btn" onclick="toggleColMenu()"
-              style="background:#1e293b;color:#aaa;border:1px solid #333;padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer;">
-        列设置 ▾
-      </button>
-      <div id="col-menu" style="display:none;position:absolute;right:0;top:100%;background:#1e293b;border:1px solid #333;border-radius:6px;padding:8px;z-index:10;min-width:180px;">
-        <div id="col-menu-items"></div>
+<div id="scatter-heatmap-section" class="section">
+  <div class="section-bar" onclick="toggleSection(this)">
+    <span class="arrow">▼</span><span class="title">散点图 & 热力图</span>
+  </div>
+  <div class="section-body">
+    <div class="charts-row">
+      <div class="chart-box">
+        <h3>风险-收益散点图</h3>
+        <div id="chart-scatter" style="height:300px;"></div>
+      </div>
+      <div class="chart-box">
+        <h3>参数热力图</h3>
+        <div class="chart-controls">
+          <select id="heatmap-x"></select>
+          <select id="heatmap-y"></select>
+        </div>
+        <div id="chart-heatmap" style="height:270px;"></div>
       </div>
     </div>
   </div>
-  <div class="table-container">
-    <div class="table-scroll">
-      <table class="opt-table">
-        <thead id="table-head"></thead>
-        <tbody id="table-body"></tbody>
-      </table>
+</div>
+
+<div id="chart-3d-wrap" class="section" style="display:none;">
+  <div class="section-bar" onclick="toggleSection(this)">
+    <span class="arrow">▼</span><span class="title">3D 参数空间</span>
+  </div>
+  <div class="section-body">
+    <div class="charts-row">
+      <div class="chart-box" style="grid-column: span 2;">
+        <div class="chart-controls">
+          <select id="scatter3d-x"></select>
+          <select id="scatter3d-y"></select>
+          <select id="scatter3d-z"></select>
+        </div>
+        <div id="chart-scatter3d" style="height:400px;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-bar" onclick="toggleSection(this)">
+    <span class="arrow">▼</span><span class="title">结果表格</span>
+    <div style="margin-left:auto;" onclick="event.stopPropagation();">
+      <div style="position:relative;display:inline-block;">
+        <button id="col-toggle-btn" onclick="toggleColMenu()"
+                style="background:#1e293b;color:#aaa;border:1px solid #333;padding:4px 10px;border-radius:6px;font-size:12px;cursor:pointer;">
+          列设置 ▾
+        </button>
+        <div id="col-menu" style="display:none;position:absolute;right:0;top:100%;background:#1e293b;border:1px solid #333;border-radius:6px;padding:8px;z-index:10;min-width:180px;">
+          <div id="col-menu-items"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="section-body">
+    <div class="table-wrap" style="padding-top:0;">
+      <div class="table-container">
+        <div class="table-scroll">
+          <table class="opt-table">
+            <thead id="table-head"></thead>
+            <tbody id="table-body"></tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -154,6 +193,20 @@
 <div class="no-data" id="no-data" style="display:none;">暂无优化结果，请先运行参数优化</div>
 
 <script>
+function toggleSection(bar) {
+  const body = bar.nextElementSibling;
+  const arrow = bar.querySelector('.arrow');
+  const isCollapsed = body.classList.toggle('collapsed');
+  arrow.classList.toggle('collapsed', isCollapsed);
+  if (!isCollapsed) {
+    setTimeout(() => {
+      if (scatterChart) scatterChart.resize();
+      if (heatmapChart) heatmapChart.resize();
+      if (scatter3dChart) scatter3dChart.resize();
+    }, 350);
+  }
+}
+
 let allData = [];
 let paramRanges = {};
 let unfilteredData = [];
@@ -297,13 +350,11 @@ function loadData() {
     }));
     if (allData.length === 0) {
       document.getElementById('no-data').style.display = '';
-      document.querySelector('.charts-row').style.display = 'none';
-      document.querySelector('.table-wrap').style.display = 'none';
+      document.getElementById('scatter-heatmap-section').style.display = 'none';
       return;
     }
     document.getElementById('no-data').style.display = 'none';
-    document.querySelector('.charts-row').style.display = '';
-    document.querySelector('.table-wrap').style.display = '';
+    document.getElementById('scatter-heatmap-section').style.display = '';
 
     document.getElementById('badge-objective').textContent = '目标: ' + allData[0].objective;
     document.getElementById('badge-count').textContent = allData.length + ' 组合';
