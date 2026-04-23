@@ -444,16 +444,27 @@ function loadReport(id) {
         }
       });
 
+      // 以 0 为中心对称，正收益绿色、负收益红色，深浅表示幅度
+      const absMax = Math.max(Math.abs(minVal), Math.abs(maxVal), 1);
       monthlyChart.setOption({
-        tooltip: { formatter: p => `${years[p.data[1]]}-${monthNames[p.data[0]]}<br/>收益: ${p.data[2].toFixed(2)}%` },
+        tooltip: { formatter: p => `${years[p.data[1]]}-${monthNames[p.data[0]]}<br/>收益: ${p.data[2] >= 0 ? '+' : ''}${p.data[2].toFixed(2)}%` },
         xAxis: { type: 'category', data: monthNames, axisLabel: { color: '#888' } },
         yAxis: { type: 'category', data: years, axisLabel: { color: '#888' } },
-        visualMap: { min: Math.min(minVal, -1), max: Math.max(maxVal, 1), calculable: true,
-                     orient: 'horizontal', left: 'center', bottom: 0, textStyle: { color: '#888' },
-                     inRange: { color: ['#ef4444', '#1e293b', '#22c55e'] } },
+        visualMap: { min: -absMax, max: absMax, calculable: true,
+                     orient: 'horizontal', left: 'center', bottom: 0,
+                     textStyle: { color: '#888' },
+                     formatter: v => v.toFixed(1) + '%',
+                     inRange: { color: ['#c0392b', '#e74c3c', '#2a1a1a', '#1a2a1a', '#27ae60', '#2ecc71'] } },
         series: [{ type: 'heatmap', data: heatData,
-                   label: { show: true, color: '#e0e0e0', fontSize: 11,
-                             formatter: p => p.data[2].toFixed(1) + '%' },
+                   label: { show: true, fontSize: 11,
+                             formatter: p => {
+                               const v = p.data[2];
+                               return (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
+                             },
+                             color: p => {
+                               const v = p.data ? p.data[2] : 0;
+                               return Math.abs(v) > absMax * 0.6 ? '#fff' : '#ccc';
+                             } },
                    emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.5)' } } }],
         grid: { left: 50, right: 20, top: 10, bottom: 50 },
       }, true);
