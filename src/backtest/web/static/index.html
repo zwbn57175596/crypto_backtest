@@ -60,6 +60,14 @@
                                   font-size: 12px; border: 1px solid #2a3a4a; border-radius: 6px; }
   .opt-params-card .batch-link:hover { background: #00d4aa22; }
   #loading { text-align: center; padding: 60px; color: #888; }
+  .skeleton { background: linear-gradient(90deg, #1e293b 25%, #253347 50%, #1e293b 75%);
+              background-size: 200% 100%; animation: shimmer 1.5s infinite;
+              border-radius: 8px; height: 80px; }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  .error-state { text-align: center; padding: 40px; color: #ef4444; }
+  .retry-btn { margin-top: 12px; padding: 8px 16px; background: #1e293b; color: #e0e0e0;
+               border: 1px solid #333; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .retry-btn:hover { background: #253347; }
 </style>
 </head>
 <body>
@@ -136,6 +144,23 @@
 </div>
 
 <script>
+// Error handling utility function
+function apiFetch(url) {
+  return fetch(url).then(r => {
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  }).catch(err => {
+    console.error('API error:', url, err);
+    const loading = document.getElementById('loading');
+    loading.style.display = '';
+    loading.innerHTML = `<div class="error-state">
+      <div>加载失败: ${err.message}</div>
+      <button class="retry-btn" onclick="location.reload()">重试</button>
+    </div>`;
+    throw err;
+  });
+}
+
 // 延迟初始化：等 content 可见后再 init，否则画布尺寸为 0
 let eqChart, ddChart, pnlChart, monthlyChart;
 function initCharts() {
@@ -173,7 +198,7 @@ function formatDuration(ms) {
   return days + ' 天 ' + (hours % 24) + ' 小时';
 }
 
-fetch('/api/reports').then(r => r.json()).then(reports => {
+apiFetch('/api/reports').then(reports => {
   const sel = document.getElementById('report-selector');
   reports.forEach(r => {
     const opt = document.createElement('option');
@@ -187,7 +212,7 @@ fetch('/api/reports').then(r => r.json()).then(reports => {
 
 function loadReport(id) {
   if (!id) return;
-  fetch(`/api/reports/${id}`).then(r => r.json()).then(d => {
+  apiFetch(`/api/reports/${id}`).then(d => {
     document.getElementById('content').style.display = '';
     document.getElementById('loading').style.display = 'none';
     // content 可见后再初始化图表
@@ -326,13 +351,15 @@ function loadReport(id) {
       optCard.style.display = 'none';
     }
 
-    // 权益曲线（降采样到 500 点）
+    // 权益曲线（自适应降采样）
     const allDates = d.equity_curve.map(p => {
       const dt = new Date(p[0]);
       return dt.getFullYear() + '-' + String(dt.getMonth()+1).padStart(2,'0') + '-' + String(dt.getDate()).padStart(2,'0');
     });
     const allVals = d.equity_curve.map(p => p[1]);
-    const eq = downsample(allDates, allVals, 500);
+    const chartWidth = document.getElementById('chart-equity').clientWidth || 800;
+    const maxPoints = Math.max(200, Math.min(2000, chartWidth));
+    const eq = downsample(allDates, allVals, maxPoints);
 
     eqChart.setOption({
       tooltip: { trigger: 'axis', formatter: params => {
