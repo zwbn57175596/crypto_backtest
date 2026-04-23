@@ -16,7 +16,8 @@ def report_db(tmp_path):
             interval TEXT NOT NULL, start_date TEXT NOT NULL,
             end_date TEXT NOT NULL, objective TEXT NOT NULL,
             score REAL NOT NULL, params_json TEXT NOT NULL,
-            report_json TEXT NOT NULL, created_at TEXT NOT NULL
+            report_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            batch_id TEXT
         )
     """)
     conn.execute("""
@@ -98,7 +99,8 @@ def db_with_optimize(tmp_path):
             score REAL NOT NULL,
             params_json TEXT NOT NULL,
             report_json TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            batch_id TEXT
         )
     """)
     conn.execute(
@@ -187,7 +189,8 @@ def db_with_linked_report(tmp_path):
             interval TEXT NOT NULL, start_date TEXT NOT NULL,
             end_date TEXT NOT NULL, objective TEXT NOT NULL,
             score REAL NOT NULL, params_json TEXT NOT NULL,
-            report_json TEXT NOT NULL, created_at TEXT NOT NULL
+            report_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            batch_id TEXT
         )
     """)
     conn.execute(
@@ -333,3 +336,72 @@ def test_get_optimize_results_without_batch_ids_returns_all(batch_client):
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 3
+
+
+@pytest.fixture
+def db_with_batch_linked_report(tmp_path):
+    """DB with reports linked to optimize_results in a batch."""
+    db = str(tmp_path / "reports.db")
+    conn = sqlite3.connect(db)
+    conn.execute("""
+        CREATE TABLE optimize_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy TEXT NOT NULL, symbol TEXT NOT NULL, interval TEXT NOT NULL,
+            start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+            objective TEXT NOT NULL, score REAL NOT NULL,
+            params_json TEXT NOT NULL, report_json TEXT NOT NULL,
+            created_at TEXT NOT NULL, batch_id TEXT
+        )
+    """)
+    # 3 trials in same batch
+    for score, params in [(2.3, '{"x":3}'), (1.8, '{"x":2}'), (1.5, '{"x":1}')]:
+        conn.execute(
+            """INSERT INTO optimize_results
+               (strategy,symbol,interval,start_date,end_date,objective,score,params_json,report_json,created_at,batch_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            ("MaCross","BTCUSDT","1h","2026-01-01","2026-06-30","sharpe_ratio",score,params,
+             '{"net_return":0.1}',
+             "2026-04-23T12:00:00+00:00","20260423T120000_MaCross_BTCUSDT"),
+        )
+    report_json = json.dumps({
+        "net_return": 0.1, "annual_return": 0.2, "max_drawdown": 0.05,
+        "max_dd_duration": 0, "sharpe_ratio": 1.8, "sortino_ratio": 2.0,
+        "win_rate": 0.6, "profit_factor": 1.5, "total_trades": 10,
+        "long_trades": 5, "short_trades": 5, "avg_hold_time": 3600000,
+        "total_commission": 10.0, "total_funding": 0.0,
+        "equity_curve": [[1000000, 10000]], "trades": [],
+    })
+    conn.execute("""
+        CREATE TABLE reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy TEXT, symbol TEXT, interval TEXT,
+            created_at TEXT, report_json TEXT,
+            optimize_result_id INTEGER
+        )
+    """)
+    # Link to second trial (id=2, score=1.8)
+    conn.execute(
+        "INSERT INTO reports (strategy,symbol,interval,created_at,report_json,optimize_result_id) VALUES (?,?,?,?,?,?)",
+        ("MaCross","BTCUSDT","1h","2026-04-23T12:00:00+00:00", report_json, 2),
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+@pytest.fixture
+def batch_linked_client(db_with_batch_linked_report):
+    app = create_app(db_with_batch_linked_report)
+    return TestClient(app)
+
+
+def test_get_report_includes_batch_context(batch_linked_client):
+    resp = batch_linked_client.get("/api/reports/1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["optimize_batch_id"] == "20260423T120000_MaCross_BTCUSDT"
+    assert data["optimize_batch_created_at"] == "2026-04-23T12:00:00+00:00"
+    assert data["optimize_start_date"] == "2026-01-01"
+    assert data["optimize_end_date"] == "2026-06-30"
+    assert data["optimize_rank"] == 2  # second best in batch (score 1.8, behind 2.3)
+    assert data["optimize_batch_total"] == 3

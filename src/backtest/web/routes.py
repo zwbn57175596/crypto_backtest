@@ -30,7 +30,15 @@ def get_report(report_id: int, request: Request):
         """SELECT r.report_json, r.strategy, r.symbol, r.interval, r.created_at,
                   o.params_json AS optimize_params_json,
                   o.score       AS optimize_score,
-                  o.objective   AS optimize_objective
+                  o.objective   AS optimize_objective,
+                  o.batch_id    AS optimize_batch_id,
+                  o.created_at  AS optimize_batch_created_at,
+                  o.start_date  AS optimize_start_date,
+                  o.end_date    AS optimize_end_date,
+                  (SELECT COUNT(*) + 1 FROM optimize_results o2
+                   WHERE o2.batch_id = o.batch_id AND o2.score > o.score) AS optimize_rank,
+                  (SELECT COUNT(*) FROM optimize_results o3
+                   WHERE o3.batch_id = o.batch_id) AS optimize_batch_total
            FROM reports r
            LEFT JOIN optimize_results o ON r.optimize_result_id = o.id
            WHERE r.id = ?""",
@@ -48,6 +56,12 @@ def get_report(report_id: int, request: Request):
     report["optimize_params"] = json.loads(row["optimize_params_json"]) if row["optimize_params_json"] else None
     report["optimize_score"] = row["optimize_score"]
     report["optimize_objective"] = row["optimize_objective"]
+    report["optimize_batch_id"] = row["optimize_batch_id"]
+    report["optimize_batch_created_at"] = row["optimize_batch_created_at"]
+    report["optimize_start_date"] = row["optimize_start_date"]
+    report["optimize_end_date"] = row["optimize_end_date"]
+    report["optimize_rank"] = row["optimize_rank"]
+    report["optimize_batch_total"] = row["optimize_batch_total"]
     return report
 
 
