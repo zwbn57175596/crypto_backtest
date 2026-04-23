@@ -405,3 +405,71 @@ def test_get_report_includes_batch_context(batch_linked_client):
     assert data["optimize_end_date"] == "2026-06-30"
     assert data["optimize_rank"] == 2  # second best in batch (score 1.8, behind 2.3)
     assert data["optimize_batch_total"] == 3
+
+
+@pytest.fixture
+def db_with_klines(tmp_path):
+    """Database with reports and a separate klines.db."""
+    db = str(tmp_path / "reports.db")
+    conn = sqlite3.connect(db)
+    report_json = json.dumps({
+        "net_return": 0.1, "annual_return": 0.2, "max_drawdown": 0.05,
+        "max_dd_duration": 0, "sharpe_ratio": 1.8, "sortino_ratio": 2.0,
+        "win_rate": 0.6, "profit_factor": 1.5, "total_trades": 10,
+        "long_trades": 5, "short_trades": 5, "avg_hold_time": 3600000,
+        "total_commission": 10.0, "total_funding": 0.0,
+        "equity_curve": [[1000, 10000], [2000, 10500], [3000, 10200]],
+        "trades": [],
+    })
+    conn.execute("""
+        CREATE TABLE reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy TEXT, symbol TEXT, interval TEXT,
+            created_at TEXT, report_json TEXT, optimize_result_id INTEGER
+        )
+    """)
+    conn.execute(
+        "INSERT INTO reports (strategy,symbol,interval,created_at,report_json) VALUES (?,?,?,?,?)",
+        ("MaCross", "BTCUSDT", "1h", "2026-04-23", report_json),
+    )
+    conn.commit()
+    conn.close()
+
+    # Create klines.db in same directory
+    klines_db = str(tmp_path / "klines.db")
+    kconn = sqlite3.connect(klines_db)
+    kconn.execute("""
+        CREATE TABLE klines (
+            exchange TEXT, symbol TEXT, interval TEXT, timestamp INTEGER,
+            open REAL, high REAL, low REAL, close REAL, volume REAL,
+            PRIMARY KEY (exchange, symbol, interval, timestamp)
+        )
+    """)
+    kconn.execute("INSERT INTO klines VALUES (?,?,?,?,?,?,?,?,?)",
+        ("binance", "BTCUSDT", "1h", 1000, 100, 105, 95, 102, 1000))
+    kconn.execute("INSERT INTO klines VALUES (?,?,?,?,?,?,?,?,?)",
+        ("binance", "BTCUSDT", "1h", 2000, 102, 110, 100, 108, 1000))
+    kconn.execute("INSERT INTO klines VALUES (?,?,?,?,?,?,?,?,?)",
+        ("binance", "BTCUSDT", "1h", 3000, 108, 112, 105, 99, 1000))
+    kconn.commit()
+    kconn.close()
+    return db
+
+
+@pytest.fixture
+def klines_client(db_with_klines):
+    app = create_app(db_with_klines)
+    return TestClient(app)
+
+
+def test_get_benchmark(klines_client):
+    resp = klines_client.get("/api/reports/1/benchmark")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["benchmark"]) == 3
+    # First: 10000 * 102/102 = 10000
+    assert data["benchmark"][0][1] == 10000.0
+    # Second: 10000 * 108/102 ≈ 10588.24
+    assert abs(data["benchmark"][1][1] - 10588.24) < 1
+    # Third: 10000 * 99/102 ≈ 9705.88
+    assert abs(data["benchmark"][2][1] - 9705.88) < 1

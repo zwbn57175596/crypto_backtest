@@ -147,6 +147,56 @@ def list_optimize_strategies(request: Request):
     return [dict(r) for r in rows]
 
 
+@router.get("/api/reports/{report_id}/benchmark")
+def get_benchmark(report_id: int, request: Request):
+    """Return Buy & Hold equity curve for the same period."""
+    conn = sqlite3.connect(_get_db(request))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT report_json, symbol, interval FROM reports WHERE id = ?",
+        (report_id,),
+    ).fetchone()
+    if row is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    report = json.loads(row["report_json"])
+    equity_curve = report.get("equity_curve", [])
+    if len(equity_curve) < 2:
+        conn.close()
+        return {"benchmark": []}
+
+    initial = equity_curve[0][1]
+    first_ts = equity_curve[0][0]
+    last_ts = equity_curve[-1][0]
+    symbol = row["symbol"]
+    interval = row["interval"]
+    conn.close()
+
+    # Look up kline close prices from klines.db (sibling of reports.db)
+    db_path = _get_db(request)
+    klines_db = str(Path(db_path).parent / "klines.db")
+    try:
+        kconn = sqlite3.connect(klines_db)
+        kconn.row_factory = sqlite3.Row
+        klines = kconn.execute(
+            """SELECT timestamp, close FROM klines
+               WHERE symbol = ? AND interval = ? AND timestamp >= ? AND timestamp <= ?
+               ORDER BY timestamp""",
+            (symbol, interval, first_ts, last_ts),
+        ).fetchall()
+        kconn.close()
+    except Exception:
+        return {"benchmark": []}
+
+    if not klines:
+        return {"benchmark": []}
+
+    first_close = klines[0]["close"]
+    benchmark = [[k["timestamp"], initial * k["close"] / first_close] for k in klines]
+    return {"benchmark": benchmark}
+
+
 @router.get("/optimize", response_class=HTMLResponse)
 def optimize_page():
     html_path = Path(__file__).parent / "static" / "optimize.html"
