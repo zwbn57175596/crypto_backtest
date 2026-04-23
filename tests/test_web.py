@@ -316,3 +316,20 @@ def test_get_batches_empty(batch_client):
     resp = batch_client.get("/api/optimize_results/batches?strategy=NoExist&symbol=BTCUSDT")
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+def test_get_optimize_results_filtered_by_batch_ids(batch_client):
+    resp = batch_client.get(
+        "/api/optimize_results?strategy=MaCross&symbol=BTCUSDT&batch_ids=20260423T120000_MaCross_BTCUSDT"
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["score"] == 2.3
+
+
+def test_get_optimize_results_without_batch_ids_returns_all(batch_client):
+    resp = batch_client.get("/api/optimize_results?strategy=MaCross&symbol=BTCUSDT")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 3

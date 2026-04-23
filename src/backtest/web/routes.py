@@ -95,6 +95,7 @@ def list_optimize_results(
     request: Request,
     strategy: str | None = Query(None),
     symbol: str | None = Query(None),
+    batch_ids: str | None = Query(None),
 ):
     conn = sqlite3.connect(_get_db(request))
     conn.row_factory = sqlite3.Row
@@ -106,6 +107,11 @@ def list_optimize_results(
     if symbol:
         query += " AND symbol = ?"
         params.append(symbol)
+    if batch_ids:
+        ids = [b.strip() for b in batch_ids.split(",") if b.strip()]
+        placeholders = ",".join("?" * len(ids))
+        query += f" AND batch_id IN ({placeholders})"
+        params.extend(ids)
     query += " ORDER BY score DESC"
     rows = conn.execute(query, params).fetchall()
     conn.close()
