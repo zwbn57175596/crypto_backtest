@@ -603,12 +603,31 @@ def save_results(
             score REAL NOT NULL,
             params_json TEXT NOT NULL,
             report_json TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            batch_id TEXT
         )
     """)
 
+    # Idempotent migration — add batch_id column if not present
+    try:
+        conn.execute("ALTER TABLE optimize_results ADD COLUMN batch_id TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+    # Backfill old rows without batch_id
+    conn.execute("""
+        UPDATE optimize_results
+        SET batch_id = strftime('%Y%m%dT%H%M%S', created_at) || '_' || strategy || '_' || symbol
+        WHERE batch_id IS NULL
+    """)
+    conn.commit()
+
     trials = result.all_trials[:top_n] if top_n else result.all_trials
     now = datetime.now(timezone.utc).isoformat()
+    # Generate batch_id from the timestamp: convert "2026-04-23T12:00:00+00:00" to "20260423T120000"
+    batch_id = now[:19].replace("-", "").replace(":", "") + "_" + strategy + "_" + symbol
+
     rows = [
         (
             strategy, symbol, interval, start_date, end_date,
@@ -616,14 +635,15 @@ def save_results(
             json.dumps(trial["params"], sort_keys=True),
             json.dumps(trial.get("report", {}), sort_keys=True),
             now,
+            batch_id,
         )
         for trial in trials
     ]
 
     conn.executemany(
         "INSERT INTO optimize_results "
-        "(strategy, symbol, interval, start_date, end_date, objective, score, params_json, report_json, created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "(strategy, symbol, interval, start_date, end_date, objective, score, params_json, report_json, created_at, batch_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         rows,
     )
     conn.commit()

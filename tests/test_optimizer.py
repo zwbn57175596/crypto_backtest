@@ -4,9 +4,10 @@ import math
 import os
 import sqlite3
 import tempfile
+import time
 
 import pytest
-from backtest.optimizer import OptimizeResult, ParamSpace, _run_single_trial, parse_params_string, GridSearchOptimizer
+from backtest.optimizer import OptimizeResult, ParamSpace, _run_single_trial, parse_params_string, GridSearchOptimizer, save_results
 
 
 class TestParseParamsString:
@@ -495,3 +496,96 @@ def test_save_top_reports_links_optimize_result_id(tmp_path):
 
     assert row is not None
     assert row[0] == top_id
+
+
+class TestBatchId:
+    def test_save_results_generates_batch_id(self, tmp_path):
+        """save_results should auto-generate batch_id for all trials in one call."""
+        db = str(tmp_path / "test.db")
+        result = OptimizeResult(
+            best_params={"x": 1},
+            best_score=1.5,
+            all_trials=[
+                {"params": {"x": 1}, "score": 1.5, "report": {"net_return": 0.1}},
+                {"params": {"x": 2}, "score": 1.0, "report": {"net_return": 0.05}},
+            ],
+            objective="sharpe_ratio",
+            total_trials=2,
+            elapsed_seconds=1.0,
+        )
+        save_results(db, "MaCross", "BTCUSDT", "1h", "2026-01-01", "2026-06-30", result)
+
+        conn = sqlite3.connect(db)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT batch_id FROM optimize_results").fetchall()
+        conn.close()
+
+        assert len(rows) == 2
+        assert rows[0]["batch_id"] == rows[1]["batch_id"]
+        batch_id = rows[0]["batch_id"]
+        assert "MaCross" in batch_id
+        assert "BTCUSDT" in batch_id
+
+    def test_save_results_different_calls_different_batch_ids(self, tmp_path):
+        """Two separate save_results calls should produce different batch_ids."""
+        db = str(tmp_path / "test.db")
+        result = OptimizeResult(
+            best_params={"x": 1},
+            best_score=1.5,
+            all_trials=[{"params": {"x": 1}, "score": 1.5, "report": {"net_return": 0.1}}],
+            objective="sharpe_ratio",
+            total_trials=1,
+            elapsed_seconds=1.0,
+        )
+        save_results(db, "MaCross", "BTCUSDT", "1h", "2026-01-01", "2026-06-30", result)
+        time.sleep(1.1)  # ensure different second-level timestamp
+        save_results(db, "MaCross", "BTCUSDT", "1h", "2026-01-01", "2026-06-30", result)
+
+        conn = sqlite3.connect(db)
+        rows = conn.execute("SELECT DISTINCT batch_id FROM optimize_results").fetchall()
+        conn.close()
+
+        assert len(rows) == 2
+
+    def test_batch_id_migration_for_old_data(self, tmp_path):
+        """Old rows without batch_id should get backfilled."""
+        db = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db)
+        conn.execute("""
+            CREATE TABLE optimize_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                interval TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                objective TEXT NOT NULL,
+                score REAL NOT NULL,
+                params_json TEXT NOT NULL,
+                report_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "INSERT INTO optimize_results (strategy,symbol,interval,start_date,end_date,objective,score,params_json,report_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("MaCross", "BTCUSDT", "1h", "2026-01-01", "2026-06-30", "sharpe_ratio", 1.5, '{"x":1}', '{"net_return":0.1}', "2026-04-20T09:30:00+00:00"),
+        )
+        conn.commit()
+        conn.close()
+
+        result = OptimizeResult(
+            best_params={"x": 2},
+            best_score=2.0,
+            all_trials=[{"params": {"x": 2}, "score": 2.0, "report": {"net_return": 0.2}}],
+            objective="sharpe_ratio",
+            total_trials=1,
+            elapsed_seconds=1.0,
+        )
+        save_results(db, "MaCross", "BTCUSDT", "1h", "2026-01-01", "2026-06-30", result)
+
+        conn = sqlite3.connect(db)
+        rows = conn.execute("SELECT batch_id FROM optimize_results WHERE id = 1").fetchall()
+        conn.close()
+
+        assert rows[0][0] is not None
+        assert "MaCross" in rows[0][0]
