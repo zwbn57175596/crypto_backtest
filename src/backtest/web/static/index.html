@@ -26,8 +26,7 @@
   .chart-box { background: #1e293b; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
   .chart-box h3 { font-size: 13px; color: #aaa; margin-bottom: 8px; }
   .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .metrics-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px;
-                  padding: 0 24px 16px; }
+  .metrics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
   .metric { background: #1e293b; border-radius: 8px; padding: 12px; }
   .metric .label { font-size: 11px; color: #888; }
   .metric .value { font-size: 16px; font-weight: 600; margin-top: 2px; color: #e0e0e0; }
@@ -88,8 +87,21 @@
     <div class="kpi"><div class="label">夏普比率</div><div class="value" id="kpi-sharpe"></div></div>
     <div class="kpi"><div class="label">胜率</div><div class="value" id="kpi-winrate"></div></div>
   </div>
-  <!-- 详细指标 -->
-  <div class="metrics-grid" id="metrics-grid"></div>
+  <!-- 指标分组 -->
+  <div id="metrics-grouped" style="padding: 0 24px 16px;">
+    <div style="margin-bottom: 8px;">
+      <div style="font-size: 12px; color: #666; margin-bottom: 6px;">收益类</div>
+      <div class="metrics-grid" id="metrics-return"></div>
+    </div>
+    <div style="margin-bottom: 8px;">
+      <div style="font-size: 12px; color: #666; margin-bottom: 6px;">风险类</div>
+      <div class="metrics-grid" id="metrics-risk"></div>
+    </div>
+    <div>
+      <div style="font-size: 12px; color: #666; margin-bottom: 6px;">交易类</div>
+      <div class="metrics-grid" id="metrics-trade"></div>
+    </div>
+  </div>
   <!-- 优化参数 -->
   <div id="opt-params-card" class="opt-params-card" style="display:none;">
     <div class="card-header">
@@ -193,27 +205,77 @@ function loadReport(id) {
     wrEl.textContent = (d.win_rate * 100).toFixed(1) + '%';
     wrEl.className = 'value ' + (d.win_rate >= 0.5 ? 'positive' : 'negative');
 
-    // 详细指标网格
-    const metricsData = [
+    // Compute additional metrics client-side
+    const closingTrades = (d.trades || []).filter(t => t.pnl !== 0);
+
+    // Max consecutive win/loss streaks
+    let maxWinStreak = 0, maxLossStreak = 0, curWin = 0, curLoss = 0;
+    closingTrades.forEach(t => {
+      if (t.pnl > 0) { curWin++; curLoss = 0; maxWinStreak = Math.max(maxWinStreak, curWin); }
+      else { curLoss++; curWin = 0; maxLossStreak = Math.max(maxLossStreak, curLoss); }
+    });
+
+    // Calmar ratio
+    const calmar = d.max_drawdown > 0 ? d.annual_return / d.max_drawdown : 0;
+
+    // Daily returns from equity curve
+    const ec = d.equity_curve || [];
+    const dailyReturns = [];
+    if (ec.length > 1) {
+      const dayMap = new Map();
+      ec.forEach(p => {
+        const day = new Date(p[0]).toISOString().slice(0,10);
+        dayMap.set(day, p[1]);
+      });
+      const days = [...dayMap.values()];
+      for (let i = 1; i < days.length; i++) {
+        dailyReturns.push((days[i] - days[i-1]) / days[i-1]);
+      }
+    }
+    const avgDailyReturn = dailyReturns.length > 0 ? dailyReturns.reduce((a,b)=>a+b,0) / dailyReturns.length : 0;
+    const returnVol = dailyReturns.length > 1
+      ? Math.sqrt(dailyReturns.reduce((s,r) => s + (r - avgDailyReturn)**2, 0) / (dailyReturns.length - 1)) * Math.sqrt(365)
+      : 0;
+
+    // Grouped metrics rendering
+    function renderMetricGroup(containerId, items) {
+      const grid = document.getElementById(containerId);
+      grid.innerHTML = '';
+      items.forEach(m => {
+        const div = document.createElement('div');
+        div.className = 'metric';
+        div.innerHTML = `<div class="label">${m.label}</div><div class="value" style="color:${m.color}">${m.value}</div>`;
+        grid.appendChild(div);
+      });
+    }
+
+    renderMetricGroup('metrics-return', [
+      { label: '总收益率', value: (d.net_return * 100).toFixed(2) + '%', color: d.net_return >= 0 ? '#22c55e' : '#ef4444' },
       { label: '年化收益率', value: (d.annual_return * 100).toFixed(2) + '%', color: d.annual_return >= 0 ? '#22c55e' : '#ef4444' },
+      { label: '日均收益率', value: (avgDailyReturn * 100).toFixed(4) + '%', color: avgDailyReturn >= 0 ? '#22c55e' : '#ef4444' },
+    ]);
+
+    renderMetricGroup('metrics-risk', [
+      { label: '最大回撤', value: (d.max_drawdown * 100).toFixed(2) + '%', color: '#ef4444' },
+      { label: '最大回撤持续', value: formatDuration(d.max_dd_duration || 0), color: '#ef4444' },
+      { label: '收益波动率', value: (returnVol * 100).toFixed(2) + '%', color: '#f59e0b' },
+      { label: '夏普比率', value: d.sharpe_ratio.toFixed(2), color: d.sharpe_ratio >= 1 ? '#22c55e' : d.sharpe_ratio >= 0 ? '#00d4aa' : '#ef4444' },
       { label: '索提诺比率', value: d.sortino_ratio === Infinity ? 'Inf' : (d.sortino_ratio || 0).toFixed(2), color: '#00d4aa' },
+      { label: 'Calmar', value: calmar.toFixed(2), color: calmar >= 1 ? '#22c55e' : '#f59e0b' },
+    ]);
+
+    renderMetricGroup('metrics-trade', [
+      { label: '胜率', value: (d.win_rate * 100).toFixed(1) + '%', color: d.win_rate >= 0.5 ? '#22c55e' : '#ef4444' },
       { label: '盈亏比', value: d.profit_factor === Infinity ? 'Inf' : (d.profit_factor || 0).toFixed(2), color: d.profit_factor >= 1 ? '#22c55e' : '#ef4444' },
       { label: '总交易次数', value: d.total_trades, color: '#e0e0e0' },
       { label: '多头交易', value: d.long_trades, color: '#22c55e' },
       { label: '空头交易', value: d.short_trades, color: '#ef4444' },
       { label: '平均持仓时间', value: formatDuration(d.avg_hold_time || 0), color: '#e0e0e0' },
-      { label: '最大回撤持续', value: formatDuration(d.max_dd_duration || 0), color: '#ef4444' },
+      { label: '连续盈利', value: maxWinStreak + ' 次', color: '#22c55e' },
+      { label: '连续亏损', value: maxLossStreak + ' 次', color: '#ef4444' },
       { label: '总手续费', value: (d.total_commission || 0).toFixed(2) + ' USDT', color: '#f59e0b' },
       { label: '总资金费用', value: (d.total_funding || 0).toFixed(2) + ' USDT', color: '#f59e0b' },
-    ];
-    const grid = document.getElementById('metrics-grid');
-    grid.innerHTML = '';
-    metricsData.forEach(m => {
-      const div = document.createElement('div');
-      div.className = 'metric';
-      div.innerHTML = `<div class="label">${m.label}</div><div class="value" style="color:${m.color}">${m.value}</div>`;
-      grid.appendChild(div);
-    });
+    ]);
 
     // 优化参数卡片 (enhanced with batch context)
     const optCard = document.getElementById('opt-params-card');
@@ -295,7 +357,6 @@ function loadReport(id) {
     });
 
     // 每笔盈亏柱状图
-    const closingTrades = (d.trades || []).filter(t => t.pnl !== 0);
     pnlChart.setOption({
       tooltip: { trigger: 'axis', formatter: params => {
         return '#' + params[0].name + '<br/>盈亏: ' + params[0].value.toFixed(4) + ' USDT';
