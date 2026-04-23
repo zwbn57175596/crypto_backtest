@@ -34,7 +34,7 @@
   .trade-table th { padding: 10px; text-align: left; color: #888; border-bottom: 1px solid #333;
                     position: sticky; top: 0; background: #1e293b; }
   .trade-table td { padding: 10px; border-bottom: 1px solid #1a1a2e; }
-  .trade-wrap { max-height: 400px; overflow-y: auto; }
+  .trade-wrap { position: relative; }
   .long { color: #22c55e; }
   .short { color: #ef4444; }
   .report-select { padding: 16px 24px; }
@@ -119,12 +119,17 @@
       <div class="chart-box"><h3>每笔盈亏</h3><div id="chart-pnl" style="height:220px;"></div></div>
     </div>
     <div class="chart-box">
-      <h3>交易明细</h3>
+      <h3>交易明细 <span id="trade-count" style="color:#888;font-size:12px;"></span></h3>
       <div class="trade-wrap">
         <table class="trade-table">
           <thead><tr><th>#</th><th>时间</th><th>方向</th><th>价格</th><th>数量</th><th>盈亏</th><th>手续费</th></tr></thead>
-          <tbody id="trade-body"></tbody>
         </table>
+        <div id="trade-virtual" style="overflow-y:auto;max-height:360px;position:relative;">
+          <div id="trade-spacer" style="width:100%;"></div>
+          <table class="trade-table" style="position:absolute;top:0;left:0;width:100%;">
+            <tbody id="trade-body"></tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
@@ -456,21 +461,42 @@ function loadReport(id) {
       dataZoom: [{ type: 'inside' }],
     });
 
-    // 交易明细表
+    // Virtual scroll for trade table
+    const allTrades = d.trades || [];
+    document.getElementById('trade-count').textContent = `(${allTrades.length} 笔)`;
+    const ROW_HEIGHT = 38;
+    const BUFFER = 5;
+    const totalHeight = allTrades.length * ROW_HEIGHT;
+    const spacer = document.getElementById('trade-spacer');
+    spacer.style.height = totalHeight + 'px';
     const tbody = document.getElementById('trade-body');
-    tbody.innerHTML = '';
-    (d.trades || []).forEach((t, i) => {
-      const tr = document.createElement('tr');
-      const sideClass = t.side === 'buy' ? 'long' : 'short';
-      const sideText = t.side === 'buy' ? '买入' : '卖出';
-      const pnlClass = t.pnl > 0 ? 'long' : t.pnl < 0 ? 'short' : '';
-      tr.innerHTML = `<td>${i+1}</td>
-        <td>${new Date(t.timestamp).toLocaleString('zh-CN')}</td>
-        <td class="${sideClass}">${sideText}</td>
-        <td>${t.price.toFixed(2)}</td><td>${t.quantity.toFixed(2)}</td>
-        <td class="${pnlClass}">${t.pnl.toFixed(4)}</td><td>${t.commission.toFixed(2)}</td>`;
-      tbody.appendChild(tr);
-    });
+    const virtualDiv = document.getElementById('trade-virtual');
+    const visibleCount = Math.ceil(360 / ROW_HEIGHT) + 1;
+
+    function renderVisibleTrades() {
+      const scrollTop = virtualDiv.scrollTop;
+      const startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - BUFFER);
+      const endIdx = Math.min(allTrades.length, startIdx + visibleCount + 2 * BUFFER);
+      tbody.innerHTML = '';
+      const table = tbody.parentElement;
+      table.style.transform = `translateY(${startIdx * ROW_HEIGHT}px)`;
+      for (let i = startIdx; i < endIdx; i++) {
+        const t = allTrades[i];
+        const tr = document.createElement('tr');
+        const sideClass = t.side === 'buy' ? 'long' : 'short';
+        const sideText = t.side === 'buy' ? '买入' : '卖出';
+        const pnlClass = t.pnl > 0 ? 'long' : t.pnl < 0 ? 'short' : '';
+        tr.innerHTML = `<td>${i+1}</td>
+          <td>${new Date(t.timestamp).toLocaleString('zh-CN')}</td>
+          <td class="${sideClass}">${sideText}</td>
+          <td>${t.price.toFixed(2)}</td><td>${t.quantity.toFixed(2)}</td>
+          <td class="${pnlClass}">${t.pnl.toFixed(4)}</td><td>${t.commission.toFixed(2)}</td>`;
+        tbody.appendChild(tr);
+      }
+    }
+
+    virtualDiv.onscroll = renderVisibleTrades;
+    renderVisibleTrades();
   });
 }
 </script>
