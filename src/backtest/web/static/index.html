@@ -52,6 +52,14 @@
   .opt-params-card .param-row:last-child { border-bottom: none; }
   .opt-params-card .param-name { font-size: 12px; color: #888; }
   .opt-params-card .param-value { font-size: 13px; font-weight: 600; color: #e0e0e0; }
+  .opt-params-card .batch-context { font-size: 12px; color: #888; padding: 8px 0;
+                                     border-bottom: 1px solid #2a3a4a; margin-bottom: 8px; }
+  .opt-params-card .batch-context div { padding: 2px 0; }
+  .opt-params-card .batch-context .highlight { color: #00d4aa; }
+  .opt-params-card .batch-link { display: block; text-align: center; padding: 8px;
+                                  margin-top: 8px; color: #00d4aa; text-decoration: none;
+                                  font-size: 12px; border: 1px solid #2a3a4a; border-radius: 6px; }
+  .opt-params-card .batch-link:hover { background: #00d4aa22; }
   #loading { text-align: center; padding: 60px; color: #888; }
 </style>
 </head>
@@ -207,19 +215,43 @@ function loadReport(id) {
       grid.appendChild(div);
     });
 
-    // 优化参数卡片
+    // 优化参数卡片 (enhanced with batch context)
     const optCard = document.getElementById('opt-params-card');
     if (d.optimize_params) {
       const scoreLabel = document.getElementById('opt-score-label');
       scoreLabel.textContent = `score: ${d.optimize_score.toFixed(4)} | ${d.optimize_objective}`;
       const body = document.getElementById('opt-params-body');
       body.innerHTML = '';
+
+      // Batch context section
+      if (d.optimize_batch_id) {
+        const ctx = document.createElement('div');
+        ctx.className = 'batch-context';
+        const batchTime = d.optimize_batch_created_at ? d.optimize_batch_created_at.slice(0,16).replace('T',' ') : '';
+        ctx.innerHTML = `
+          <div>批次: <span class="highlight">${d.optimize_batch_id.split('_')[0]}</span>  ${batchTime}</div>
+          <div>回测区间: ${d.optimize_start_date || '?'} ~ ${d.optimize_end_date || '?'}</div>
+          <div>批次排名: <span class="highlight">${d.optimize_rank}</span> / ${d.optimize_batch_total}</div>`;
+        body.appendChild(ctx);
+      }
+
+      // Param key-value rows
       Object.entries(d.optimize_params).forEach(([k, v]) => {
         const row = document.createElement('div');
         row.className = 'param-row';
         row.innerHTML = `<span class="param-name">${k}</span><span class="param-value">${v}</span>`;
         body.appendChild(row);
       });
+
+      // Link to optimize page with batch selected
+      if (d.optimize_batch_id) {
+        const link = document.createElement('a');
+        link.className = 'batch-link';
+        link.href = `/optimize?batches=${encodeURIComponent(d.optimize_batch_id)}`;
+        link.textContent = '查看该批次全部结果 →';
+        body.appendChild(link);
+      }
+
       optCard.style.display = '';
     } else {
       optCard.style.display = 'none';
