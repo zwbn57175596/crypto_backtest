@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>参数优化结果</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts-gl@2/dist/echarts-gl.min.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -106,6 +107,18 @@
   </div>
 </div>
 
+<div id="chart-3d-wrap" class="charts-row" style="display:none;">
+  <div class="chart-box" style="grid-column: span 2;">
+    <h3>3D 参数空间</h3>
+    <div class="chart-controls">
+      <select id="scatter3d-x"></select>
+      <select id="scatter3d-y"></select>
+      <select id="scatter3d-z"></select>
+    </div>
+    <div id="chart-scatter3d" style="height:400px;"></div>
+  </div>
+</div>
+
 <div class="table-wrap">
   <div class="table-container">
     <div class="table-scroll">
@@ -121,7 +134,7 @@
 
 <script>
 let allData = [];
-let scatterChart, heatmapChart;
+let scatterChart, heatmapChart, scatter3dChart;
 let sortCol = 'score', sortDir = 'desc';
 let selectedRow = null;
 let allBatches = [];
@@ -272,6 +285,7 @@ function loadData() {
     document.getElementById('badge-count').textContent = allData.length + ' 组合';
 
     initHeatmapControls();
+    init3dControls();
     renderScatter();
     renderHeatmap();
     renderTable();
@@ -347,6 +361,53 @@ function initHeatmapControls() {
   });
   xSel.onchange = renderHeatmap;
   ySel.onchange = renderHeatmap;
+}
+
+function init3dControls() {
+  const names = getParamNames();
+  if (names.length < 3) {
+    document.getElementById('chart-3d-wrap').style.display = 'none';
+    return;
+  }
+  document.getElementById('chart-3d-wrap').style.display = '';
+  ['scatter3d-x','scatter3d-y','scatter3d-z'].forEach((id, i) => {
+    const sel = document.getElementById(id);
+    sel.innerHTML = '';
+    names.forEach((n, j) => {
+      sel.innerHTML += `<option value="${n}" ${j===i?'selected':''}>${n}</option>`;
+    });
+    sel.onchange = render3dScatter;
+  });
+  render3dScatter();
+}
+
+function render3dScatter() {
+  if (!scatter3dChart) scatter3dChart = echarts.init(document.getElementById('chart-scatter3d'));
+  const xP = document.getElementById('scatter3d-x').value;
+  const yP = document.getElementById('scatter3d-y').value;
+  const zP = document.getElementById('scatter3d-z').value;
+  if (!xP || !yP || !zP) return;
+
+  const scores = allData.map(d => d.score);
+  const minScore = Math.min(...scores);
+  const maxScore = Math.max(...scores);
+
+  const data = allData.map(d => [d.params[xP], d.params[yP], d.params[zP], d.score]);
+
+  scatter3dChart.setOption({
+    tooltip: {},
+    xAxis3D: { name: xP, type: 'value' },
+    yAxis3D: { name: yP, type: 'value' },
+    zAxis3D: { name: zP, type: 'value' },
+    visualMap: { min: minScore, max: maxScore, dimension: 3,
+                 inRange: { color: ['#ef4444','#f59e0b','#22c55e'] },
+                 textStyle: { color: '#888' } },
+    grid3D: { viewControl: { autoRotate: false },
+              light: { main: { intensity: 1.2 } },
+              environment: '#0f1117' },
+    series: [{ type: 'scatter3D', data: data, symbolSize: 6,
+               itemStyle: { opacity: 0.8 } }],
+  }, true);
 }
 
 function renderHeatmap() {
@@ -492,6 +553,7 @@ function highlightRow(idx) {
 window.addEventListener('resize', () => {
   if (scatterChart) scatterChart.resize();
   if (heatmapChart) heatmapChart.resize();
+  if (scatter3dChart) scatter3dChart.resize();
 });
 </script>
 </body>
