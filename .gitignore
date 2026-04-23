@@ -5,5 +5,7 @@ __pycache__/
 dist/
 build/
 data/*.db
+data/*.log
+data/*.pid
 .superpowers/
 .env
