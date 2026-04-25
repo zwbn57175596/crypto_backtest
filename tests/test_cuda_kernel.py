@@ -10,11 +10,12 @@ import numpy as np
 try:
     from numba import cuda
     HAS_CUDA = cuda.is_available()
-except ImportError:
+except (ImportError, Exception):
     HAS_CUDA = False
 
-from backtest.numba_simulate import simulate
-from backtest.cuda_strategies.consecutive_reverse import consecutive_reverse_kernel
+if HAS_CUDA:
+    from backtest.numba_simulate import simulate
+    from backtest.cuda_strategies.consecutive_reverse import consecutive_reverse_kernel
 
 
 # Skip all tests if CUDA is not available
