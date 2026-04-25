@@ -147,6 +147,20 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             objective=args.objective,
             n_jobs=args.n_jobs,
         )
+    elif args.method == "cuda-grid":
+        from backtest.cuda_runner import CudaGridOptimizer
+        optimizer = CudaGridOptimizer(
+            db_path=args.db or str(Path("data") / "klines.db"),
+            strategy_path=args.strategy,
+            symbol=args.symbol,
+            interval=args.interval,
+            start=args.start,
+            end=args.end,
+            balance=args.balance,
+            leverage=args.leverage,
+            param_space=param_space,
+            objective=args.objective,
+        )
     else:
         optimizer = GridSearchOptimizer(
             db_path=args.db or str(Path("data") / "klines.db"),
@@ -259,7 +273,7 @@ def main() -> None:
     p_opt.add_argument("--params", required=True, help="e.g. X=1:10:2,Y=a|b|c")
     p_opt.add_argument("--objective", default="sharpe_ratio",
                        choices=["sharpe_ratio", "net_return", "sortino_ratio", "profit_factor", "win_rate"])
-    p_opt.add_argument("--method", default="grid", choices=["grid", "optuna", "numba-grid"])
+    p_opt.add_argument("--method", default="grid", choices=["grid", "optuna", "numba-grid", "cuda-grid"])
     p_opt.add_argument("--n-jobs", type=int, default=None)
     p_opt.add_argument("--n-trials", type=int, default=100, help="For optuna method")
     p_opt.add_argument("--top", type=int, default=10, help="Show top N results in console")
