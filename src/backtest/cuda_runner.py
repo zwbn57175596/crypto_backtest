@@ -237,17 +237,18 @@ class CudaGridOptimizer:
 
     @staticmethod
     def _get_strategy_name(strategy_path: str) -> str:
-        """Extract strategy class name from file path.
+        """Load strategy file and return the BaseStrategy subclass name."""
+        import importlib.util
+        from backtest.strategy import BaseStrategy
 
-        Expects filename like consecutive_reverse.py → ConsecutiveReverseStrategy
-        """
-        import os
-
-        basename = os.path.basename(strategy_path)
-        # Convert snake_case to CamelCase and append "Strategy"
-        parts = basename.replace(".py", "").split("_")
-        class_name = "".join(p.capitalize() for p in parts) + "Strategy"
-        return class_name
+        spec = importlib.util.spec_from_file_location("user_strategy", strategy_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for attr in dir(module):
+            obj = getattr(module, attr)
+            if isinstance(obj, type) and issubclass(obj, BaseStrategy) and obj is not BaseStrategy:
+                return obj.__name__
+        raise ValueError(f"No BaseStrategy subclass found in {strategy_path}")
 
     @staticmethod
     def _auto_detect_batch_size(n_params: int) -> int:

@@ -72,9 +72,9 @@ class TestCudaGridOptimizer:
             {
                 "CONSECUTIVE_THRESHOLD": [3, 5],
                 "POSITION_MULTIPLIER": [1.1, 1.2],
-                "INITIAL_POSITION_PCT": 0.01,
-                "PROFIT_CANDLE_THRESHOLD": 1,
-                "LEVERAGE": 10,
+                "INITIAL_POSITION_PCT": [0.01],
+                "PROFIT_CANDLE_THRESHOLD": [1],
+                "LEVERAGE": [10],
             }
         )
 
@@ -126,9 +126,9 @@ class TestCudaGridOptimizer:
             {
                 "CONSECUTIVE_THRESHOLD": [3, 5, 7],
                 "POSITION_MULTIPLIER": 1.1,
-                "INITIAL_POSITION_PCT": 0.01,
-                "PROFIT_CANDLE_THRESHOLD": 1,
-                "LEVERAGE": 10,
+                "INITIAL_POSITION_PCT": [0.01],
+                "PROFIT_CANDLE_THRESHOLD": [1],
+                "LEVERAGE": [10],
             }
         )
 
@@ -168,9 +168,9 @@ class TestCudaGridOptimizer:
             {
                 "CONSECUTIVE_THRESHOLD": [3, 5],
                 "POSITION_MULTIPLIER": 1.1,
-                "INITIAL_POSITION_PCT": 0.01,
-                "PROFIT_CANDLE_THRESHOLD": 1,
-                "LEVERAGE": 10,
+                "INITIAL_POSITION_PCT": [0.01],
+                "PROFIT_CANDLE_THRESHOLD": [1],
+                "LEVERAGE": [10],
             }
         )
 
