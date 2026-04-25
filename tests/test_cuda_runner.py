@@ -259,3 +259,79 @@ class TestCudaGridOptimizer:
                         f"Metric {metric_key} mismatch for {cuda_trial['params']}: "
                         f"CUDA={cuda_val}, Numba={numba_val}, rel_error={rel_error}"
                     )
+
+
+@pytest.mark.skipif(not HAS_CUDA, reason="CUDA not available")
+class TestEdgeCases:
+    def test_combo_count_not_divisible_by_block_size(self, db_with_data):
+        """Non-aligned combo count should not lose any combos."""
+        from backtest.optimizer import ParamSpace
+
+        # 7 combos with block_size 256 means 1 partial block
+        space = ParamSpace({
+            "CONSECUTIVE_THRESHOLD": [3, 4, 5, 6, 7, 8, 9],
+            "POSITION_MULTIPLIER": [1.0],
+            "INITIAL_POSITION_PCT": [0.01],
+            "PROFIT_CANDLE_THRESHOLD": [1],
+            "LEVERAGE": [50],
+        })
+        optimizer = CudaGridOptimizer(
+            db_path=db_with_data,
+            strategy_path="strategies/consecutive_reverse.py",
+            symbol="BTCUSDT",
+            interval="1h",
+            start="2024-01-01",
+            end="2024-01-08",
+            balance=1000.0,
+            leverage=50,
+            param_space=space,
+            objective="sharpe_ratio",
+        )
+        result = optimizer.run()
+        assert result.total_trials == 7
+
+    def test_single_combo(self, db_with_data):
+        """Single combo should work."""
+        from backtest.optimizer import ParamSpace
+
+        space = ParamSpace({
+            "CONSECUTIVE_THRESHOLD": [5],
+            "POSITION_MULTIPLIER": [1.1],
+            "INITIAL_POSITION_PCT": [0.01],
+            "PROFIT_CANDLE_THRESHOLD": [1],
+            "LEVERAGE": [50],
+        })
+        optimizer = CudaGridOptimizer(
+            db_path=db_with_data,
+            strategy_path="strategies/consecutive_reverse.py",
+            symbol="BTCUSDT",
+            interval="1h",
+            start="2024-01-01",
+            end="2024-01-08",
+            balance=1000.0,
+            leverage=50,
+            param_space=space,
+            objective="sharpe_ratio",
+        )
+        result = optimizer.run()
+        assert result.total_trials == 1
+
+    def test_unknown_strategy_raises(self, db_with_data):
+        """Strategy not in CUDA registry should raise ValueError."""
+        from backtest.optimizer import ParamSpace
+
+        space = ParamSpace({"short_period": [5, 10]})
+        optimizer = CudaGridOptimizer(
+            db_path=db_with_data,
+            strategy_path="strategies/example_ma_cross.py",
+            symbol="BTCUSDT",
+            interval="1h",
+            start="2024-01-01",
+            end="2024-01-08",
+            balance=1000.0,
+            leverage=50,
+            param_space=space,
+            objective="sharpe_ratio",
+        )
+        with pytest.raises(ValueError, match="not found in CUDA_STRATEGIES"):
+            optimizer.run()
