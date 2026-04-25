@@ -36,6 +36,14 @@ python -m backtest run --strategy strategies/example_ma_cross.py \
 
 # Start web server to view reports
 python -m backtest web --port 8000
+
+# CUDA GPU-accelerated optimization (requires NVIDIA GPU + numba)
+python -m backtest optimize --strategy strategies/consecutive_reverse.py \
+    --symbol BTCUSDT --interval 1h \
+    --start 2024-01-01 --end 2024-12-31 \
+    --balance 1000 --leverage 50 \
+    --params "CONSECUTIVE_THRESHOLD=3:8:1,POSITION_MULTIPLIER=1.0:1.5:0.1,INITIAL_POSITION_PCT=0.005:0.03:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1" \
+    --method cuda-grid --objective sharpe_ratio
 ```
 
 ## Architecture Overview
@@ -49,6 +57,8 @@ Event-driven backtesting engine with a clear data flow:
 - **BaseStrategy** — User-implemented strategy base class
 - **Reporter** — Collects trades and equity curve, computes 14 performance metrics
 - **DataCollector** — Fetches historical klines from Binance/OKX/HTX REST API → SQLite
+- **NumbaGridOptimizer** — CPU JIT-compiled grid search with multiprocessing
+- **CudaGridOptimizer** — GPU CUDA-accelerated grid search with auto-batching
 
 ### Event Loop Data Flow
 ```
@@ -149,13 +159,20 @@ Each bar triggers this sequence in `on_new_bar()`:
 
 ```
 src/backtest/
-├── __main__.py           # CLI entry point with 3 subcommands: collect/run/web
+├── __main__.py           # CLI entry point: collect/run/web/optimize
 ├── engine.py             # BacktestEngine — event loop
 ├── data_feed.py          # DataFeed — SQLite → klines stream
 ├── exchange.py           # SimExchange — order matching + position tracking
 ├── strategy.py           # BaseStrategy — user strategy base class
 ├── models.py             # Dataclasses: Bar, Order, Position, Trade
 ├── reporter.py           # Reporter — metric calculation
+├── optimizer.py          # Grid/Optuna/NumbaGrid optimizers
+├── numba_simulate.py     # Numba JIT CPU-compiled simulation kernel
+├── cuda_exchange.py      # CUDA device functions (fill_order, calc_quantity)
+├── cuda_runner.py        # CudaGridOptimizer — GPU grid search with auto-batching
+├── cuda_strategies/
+│   ├── __init__.py       # Strategy registry (name → kernel mapping)
+│   └── consecutive_reverse.py  # ConsecutiveReverse CUDA kernel
 ├── collector/
 │   ├── base.py           # BaseCollector — async API client
 │   ├── binance.py        # Binance collector (1500 klines/req)
