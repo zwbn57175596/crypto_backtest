@@ -166,6 +166,7 @@ Web 报告展示：
 | Optuna 贝叶斯优化 | `--method optuna` | 通用策略，智能搜索 | 取决于 n_trials |
 | Numba CPU 加速 | `--method numba-grid` | ConsecutiveReverse 策略，CPU 多核并行 | ~50-200x |
 | **CUDA GPU 加速** | `--method cuda-grid` | ConsecutiveReverse 策略，GPU 大规模并行 | ~1000x+ |
+| **CUDA 自动寻优** | `--method cuda-auto` | ConsecutiveReverse 策略，策略内置搜索空间 + 两阶段粗到细搜索 | ~1000x+ |
 
 ### 基本用法
 
@@ -187,14 +188,22 @@ python -m backtest optimize \
     --balance 1000 --leverage 50 \
     --params "CONSECUTIVE_THRESHOLD=3:8:1,POSITION_MULTIPLIER=1.0:1.5:0.1,INITIAL_POSITION_PCT=0.005:0.03:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1" \
     --method cuda-grid --objective sharpe_ratio
+
+# CUDA 自动寻优（使用策略内置 OPTIMIZE_SPACE + 两阶段细化）
+python -m backtest optimize \
+    --strategy strategies/consecutive_reverse.py \
+    --symbol BTCUSDT --interval 1h \
+    --start 2024-01-01 --end 2024-12-31 \
+    --balance 1000 --leverage 50 \
+    --method cuda-auto --objective sharpe_ratio
 ```
 
 ### 优化参数说明
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| --params | 参数搜索空间，格式 `名称=最小:最大:步长` 或 `名称=值1\|值2\|值3` | 必需 |
-| --method | 优化方式 | grid |
+| --params | 参数搜索空间，格式 `名称=最小:最大:步长` 或 `名称=值1\|值2\|值3`。若策略定义了 `OPTIMIZE_SPACE`，可省略 | 可选 |
+| --method | 优化方式：`grid` / `optuna` / `numba-grid` / `cuda-grid` / `cuda-auto` | grid |
 | --objective | 优化目标指标 | sharpe_ratio |
 | --n-jobs | CPU 并行进程数（grid/numba-grid） | 自动检测 |
 | --n-trials | Optuna 搜索次数 | 100 |
@@ -298,9 +307,9 @@ python -c "from numba import cuda; print(cuda.is_available())"
 python -m backtest optimize \
     --strategy strategies/consecutive_reverse.py \
     --symbol BTCUSDT --interval 1h \
-    --start 2024-01-01 --end 2024-12-31 \
+    --start 2020-01-01 --end 2025-12-31 \
     --balance 1000 --leverage 50 \
-    --params "CONSECUTIVE_THRESHOLD=3:8:1,POSITION_MULTIPLIER=1.0:1.5:0.1,INITIAL_POSITION_PCT=0.005:0.03:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1" \
+    --params "CONSECUTIVE_THRESHOLD=2:8:1,POSITION_MULTIPLIER=1.0:1.5:0.1,INITIAL_POSITION_PCT=0.005:0.03:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1" \
     --method cuda-grid --objective sharpe_ratio
 ```
 

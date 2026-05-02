@@ -42,7 +42,37 @@ def cmd_collect(args: argparse.Namespace) -> None:
     print("Done.")
 
 
-def cmd_run(args: argparse.Namespace) -> None:
+def _apply_extra_params(strategy_class: type, extra_args: list[str]) -> None:
+    it = iter(extra_args)
+    for token in it:
+        if not token.startswith("--"):
+            continue
+        key = token.lstrip("-")
+        try:
+            val_str = next(it)
+        except StopIteration:
+            continue
+        # Try uppercase first (strategy convention), then lowercase
+        attr_name = key.upper() if hasattr(strategy_class, key.upper()) else key
+        existing = getattr(strategy_class, attr_name, None)
+        if existing is not None:
+            try:
+                val = type(existing)(val_str)
+            except (ValueError, TypeError):
+                val = val_str
+        else:
+            try:
+                val = int(val_str)
+            except ValueError:
+                try:
+                    val = float(val_str)
+                except ValueError:
+                    val = val_str
+        setattr(strategy_class, attr_name, val)
+        print(f"  [param] {attr_name} = {val}")
+
+
+def cmd_run(args: argparse.Namespace, extra_args: list[str] | None = None) -> None:
     import yaml
     config_path = Path("config/default.yaml")
     config = {}
@@ -51,6 +81,8 @@ def cmd_run(args: argparse.Namespace) -> None:
             config = yaml.safe_load(f).get("backtest", {})
 
     strategy_class = _load_strategy(args.strategy)
+    if extra_args:
+        _apply_extra_params(strategy_class, extra_args)
     db_path = args.db or str(Path("data") / "klines.db")
 
     engine = BacktestEngine(
@@ -109,14 +141,22 @@ def cmd_web(args: argparse.Namespace) -> None:
 def cmd_optimize(args: argparse.Namespace) -> None:
     from backtest.optimizer import (
         GridSearchOptimizer, NumbaGridOptimizer, OptunaOptimizer,
-        parse_params_string, save_results,
+        load_strategy_optimize_space, parse_params_string, save_results,
     )
 
-    param_space = parse_params_string(args.params)
     strategy_class = _load_strategy(args.strategy)
+    if args.params:
+        param_space = parse_params_string(args.params)
+    else:
+        param_space = load_strategy_optimize_space(args.strategy)
 
-    print(f"Optimizing {strategy_class.__name__}: {param_space.total_combinations} combinations, "
-          f"{args.n_jobs or 'auto'} workers, objective={args.objective}")
+    summary = (
+        f"Optimizing {strategy_class.__name__}: {param_space.total_combinations} combinations, "
+        f"{args.n_jobs or 'auto'} workers, objective={args.objective}"
+    )
+    if args.method == "cuda-auto":
+        summary += ", stage2=auto-refine"
+    print(summary)
 
     if args.method == "optuna":
         optimizer = OptunaOptimizer(
@@ -128,6 +168,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             end=args.end,
             balance=args.balance,
             leverage=args.leverage,
+            exchange=args.exchange,
             param_space=param_space,
             objective=args.objective,
             n_trials=args.n_trials,
@@ -143,6 +184,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             end=args.end,
             balance=args.balance,
             leverage=args.leverage,
+            exchange=args.exchange,
             param_space=param_space,
             objective=args.objective,
             n_jobs=args.n_jobs,
@@ -158,6 +200,22 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             end=args.end,
             balance=args.balance,
             leverage=args.leverage,
+            exchange=args.exchange,
+            param_space=param_space,
+            objective=args.objective,
+        )
+    elif args.method == "cuda-auto":
+        from backtest.cuda_runner import CudaAutoOptimizer
+        optimizer = CudaAutoOptimizer(
+            db_path=args.db or str(Path("data") / "klines.db"),
+            strategy_path=args.strategy,
+            symbol=args.symbol,
+            interval=args.interval,
+            start=args.start,
+            end=args.end,
+            balance=args.balance,
+            leverage=args.leverage,
+            exchange=args.exchange,
             param_space=param_space,
             objective=args.objective,
         )
@@ -171,6 +229,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             end=args.end,
             balance=args.balance,
             leverage=args.leverage,
+            exchange=args.exchange,
             param_space=param_space,
             objective=args.objective,
             n_jobs=args.n_jobs,
@@ -230,6 +289,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         end=args.end,
         balance=args.balance,
         leverage=args.leverage,
+        exchange=args.exchange,
     )
     print(f"Top {args.report_top} results saved as reports. View with: python -m backtest web")
 
@@ -270,10 +330,10 @@ def main() -> None:
     p_opt.add_argument("--end", required=True, help="YYYY-MM-DD")
     p_opt.add_argument("--balance", type=float, default=10000.0)
     p_opt.add_argument("--leverage", type=int, default=10)
-    p_opt.add_argument("--params", required=True, help="e.g. X=1:10:2,Y=a|b|c")
+    p_opt.add_argument("--params", default=None, help="e.g. X=1:10:2,Y=a|b|c; omit to use strategy OPTIMIZE_SPACE")
     p_opt.add_argument("--objective", default="sharpe_ratio",
                        choices=["sharpe_ratio", "net_return", "sortino_ratio", "profit_factor", "win_rate"])
-    p_opt.add_argument("--method", default="grid", choices=["grid", "optuna", "numba-grid", "cuda-grid"])
+    p_opt.add_argument("--method", default="grid", choices=["grid", "optuna", "numba-grid", "cuda-grid", "cuda-auto"])
     p_opt.add_argument("--n-jobs", type=int, default=None)
     p_opt.add_argument("--n-trials", type=int, default=100, help="For optuna method")
     p_opt.add_argument("--top", type=int, default=10, help="Show top N results in console")
@@ -281,11 +341,11 @@ def main() -> None:
     p_opt.add_argument("--report-top", type=int, default=3, help="Save top N full reports (with equity curve)")
     p_opt.add_argument("--db", default=None)
 
-    args = parser.parse_args()
+    args, extra = parser.parse_known_args()
     if args.command == "collect":
         cmd_collect(args)
     elif args.command == "run":
-        cmd_run(args)
+        cmd_run(args, extra)
     elif args.command == "web":
         cmd_web(args)
     elif args.command == "optimize":

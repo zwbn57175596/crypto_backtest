@@ -7,7 +7,15 @@ import tempfile
 import time
 
 import pytest
-from backtest.optimizer import OptimizeResult, ParamSpace, _run_single_trial, parse_params_string, GridSearchOptimizer, save_results
+from backtest.optimizer import (
+    GridSearchOptimizer,
+    OptimizeResult,
+    ParamSpace,
+    _run_single_trial,
+    load_strategy_optimize_space,
+    parse_params_string,
+    save_results,
+)
 
 
 class TestParseParamsString:
@@ -66,6 +74,20 @@ class TestParamSpace:
         space = ParamSpace({})
         assert space.grid() == [{}]
         assert space.total_combinations == 1
+
+    def test_scalar_value(self):
+        space = ParamSpace({"X": 3, "Y": 1.5})
+        assert space.grid() == [{"X": 3, "Y": 1.5}]
+        assert space.total_combinations == 1
+
+
+class TestStrategyOptimizeSpace:
+    def test_loads_strategy_defined_space(self):
+        space = load_strategy_optimize_space("strategies/consecutive_reverse.py")
+        assert space.total_combinations == 1080
+        combos = space.grid()
+        assert combos[0]["CONSECUTIVE_THRESHOLD"] == 3
+        assert combos[0]["LEVERAGE"] == 50
 
 
 class TestRunSingleTrial:

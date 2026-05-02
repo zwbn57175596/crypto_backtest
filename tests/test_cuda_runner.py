@@ -17,8 +17,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 try:
+    from numba import cuda
+    HAS_CUDA = cuda.is_available()
+except Exception:
+    HAS_CUDA = False
+
+try:
     from backtest.cuda_runner import CudaGridOptimizer
-    HAS_CUDA = True
 except ImportError:
     HAS_CUDA = False
 

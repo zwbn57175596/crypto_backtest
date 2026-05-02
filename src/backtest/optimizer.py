@@ -22,6 +22,10 @@ class OptimizeResult:
     elapsed_seconds: float
 
 
+def _is_int_value(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _parse_number(s: str):
     """Parse string to int or float."""
     try:
@@ -77,6 +81,99 @@ def _load_strategy_class(path: str):
     raise ValueError(f"No BaseStrategy subclass found in {path}")
 
 
+def expand_param_values(spec) -> list:
+    """Expand one parameter spec into a concrete value list."""
+    if isinstance(spec, list):
+        return list(spec)
+    if isinstance(spec, tuple) and len(spec) == 3:
+        min_val, max_val, step = spec
+        if _is_int_value(min_val) and _is_int_value(max_val) and _is_int_value(step):
+            return list(range(min_val, max_val + 1, step))
+
+        values = []
+        v = float(min_val)
+        while v <= float(max_val) + float(step) * 0.01:
+            values.append(round(v, 10))
+            v += float(step)
+        return values
+    return [spec]
+
+
+def load_strategy_optimize_space(strategy_path: str) -> ParamSpace:
+    """Load strategy-defined OPTIMIZE_SPACE into a ParamSpace."""
+    strategy_class = _load_strategy_class(strategy_path)
+    raw_space = getattr(strategy_class, "OPTIMIZE_SPACE", None)
+    if not raw_space:
+        raise ValueError(
+            f"Strategy '{strategy_class.__name__}' does not define OPTIMIZE_SPACE"
+        )
+    if not isinstance(raw_space, dict):
+        raise ValueError("OPTIMIZE_SPACE must be a dict of param specs")
+    return ParamSpace(raw_space)
+
+
+def load_strategy_auto_optimize_config(strategy_path: str) -> dict:
+    """Load strategy-defined AUTO_OPTIMIZE_CONFIG."""
+    strategy_class = _load_strategy_class(strategy_path)
+    config = getattr(strategy_class, "AUTO_OPTIMIZE_CONFIG", {})
+    if config is None:
+        return {}
+    if not isinstance(config, dict):
+        raise ValueError("AUTO_OPTIMIZE_CONFIG must be a dict")
+    return config
+
+
+def load_strategy_param_defaults(strategy_path: str, param_names: list[str] | None = None) -> dict:
+    """Load default class attribute values for strategy params."""
+    strategy_class = _load_strategy_class(strategy_path)
+    if param_names is None:
+        names = [
+            name for name in dir(strategy_class)
+            if name.isupper() and not name.startswith("_")
+        ]
+    else:
+        names = param_names
+    defaults = {}
+    for name in names:
+        if hasattr(strategy_class, name):
+            defaults[name] = getattr(strategy_class, name)
+    return defaults
+
+
+class ExplicitParamSpace:
+    """Parameter space backed by an explicit list of parameter combinations."""
+
+    def __init__(self, combos: list[dict]):
+        deduped: list[dict] = []
+        seen: set[str] = set()
+        for combo in combos:
+            key = json.dumps(combo, sort_keys=True)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(dict(combo))
+        self._combos = deduped
+
+    @property
+    def total_combinations(self) -> int:
+        return len(self._combos)
+
+    def grid(self) -> list[dict]:
+        return [dict(combo) for combo in self._combos]
+
+
+def merge_trials(*trial_groups: list[dict]) -> list[dict]:
+    """Merge trial lists by params, keeping the highest score per combination."""
+    merged: dict[str, dict] = {}
+    for trials in trial_groups:
+        for trial in trials:
+            key = json.dumps(trial["params"], sort_keys=True)
+            existing = merged.get(key)
+            if existing is None or trial["score"] > existing["score"]:
+                merged[key] = trial
+    return sorted(merged.values(), key=lambda item: item["score"], reverse=True)
+
+
 def _make_strategy(base_class: type, params: dict) -> type:
     """Create strategy subclass with overridden class attributes."""
     return type(f"{base_class.__name__}_trial", (base_class,), params)
@@ -122,21 +219,7 @@ class ParamSpace:
         self._space = space
         self._axes: dict[str, list] = {}
         for name, spec in space.items():
-            if isinstance(spec, list):
-                self._axes[name] = spec
-            elif isinstance(spec, tuple) and len(spec) == 3:
-                min_val, max_val, step = spec
-                if isinstance(min_val, int) and isinstance(max_val, int) and isinstance(step, int):
-                    self._axes[name] = list(range(min_val, max_val + 1, step))
-                else:
-                    values = []
-                    v = float(min_val)
-                    while v <= float(max_val) + float(step) * 0.01:
-                        values.append(round(v, 10))
-                        v += float(step)
-                    self._axes[name] = values
-            else:
-                raise ValueError(f"Invalid param spec for '{name}': {spec}")
+            self._axes[name] = expand_param_values(spec)
 
     @property
     def total_combinations(self) -> int:
@@ -168,6 +251,7 @@ class GridSearchOptimizer:
         end: str,
         balance: float = 10000.0,
         leverage: int = 10,
+        exchange: str = "binance",
         param_space: ParamSpace | None = None,
         objective: str = "sharpe_ratio",
         n_jobs: int | None = None,
@@ -180,6 +264,7 @@ class GridSearchOptimizer:
         self.end = f"{end} 23:59:59" if len(end) == 10 else end
         self.balance = balance
         self.leverage = leverage
+        self.exchange = exchange
         self.param_space = param_space or ParamSpace({})
         self.objective = objective
         self.n_jobs = n_jobs or os.cpu_count() or 1
@@ -196,7 +281,7 @@ class GridSearchOptimizer:
                 "strategy_path": self.strategy_path,
                 "symbol": self.symbol,
                 "interval": self.interval,
-                "exchange": "binance",
+                "exchange": self.exchange,
                 "start": self.start,
                 "end": self.end,
                 "balance": self.balance,
@@ -253,6 +338,7 @@ class OptunaOptimizer:
         end: str,
         balance: float = 10000.0,
         leverage: int = 10,
+        exchange: str = "binance",
         param_space: ParamSpace | None = None,
         objective: str = "sharpe_ratio",
         n_trials: int = 100,
@@ -274,6 +360,7 @@ class OptunaOptimizer:
         self.end = f"{end} 23:59:59" if len(end) == 10 else end
         self.balance = balance
         self.leverage = leverage
+        self.exchange = exchange
         self.param_space = param_space or ParamSpace({})
         self.objective = objective
         self.n_trials = n_trials
@@ -293,6 +380,8 @@ class OptunaOptimizer:
                     params[name] = trial.suggest_float(
                         name, float(min_val), float(max_val), step=float(step)
                     )
+            else:
+                params[name] = trial.suggest_categorical(name, [spec])
         return params
 
     def run(self) -> OptimizeResult:
@@ -310,7 +399,7 @@ class OptunaOptimizer:
                 "strategy_path": self.strategy_path,
                 "symbol": self.symbol,
                 "interval": self.interval,
-                "exchange": "binance",
+                "exchange": self.exchange,
                 "start": self.start,
                 "end": self.end,
                 "balance": self.balance,
@@ -452,6 +541,7 @@ class NumbaGridOptimizer:
         end: str,
         balance: float = 10000.0,
         leverage: int = 10,
+        exchange: str = "binance",
         param_space: ParamSpace | None = None,
         objective: str = "sharpe_ratio",
         n_jobs: int | None = None,
@@ -467,6 +557,7 @@ class NumbaGridOptimizer:
         self.end = f"{end} 23:59:59" if len(end) == 10 else end
         self.balance = balance
         self.leverage = leverage
+        self.exchange = exchange
         self.param_space = param_space or ParamSpace({})
         self.objective = objective
         self.n_jobs = n_jobs or os.cpu_count() or 1
@@ -488,7 +579,7 @@ class NumbaGridOptimizer:
             datetime.strptime(self.end, "%Y-%m-%d %H:%M:%S")
             .replace(tzinfo=timezone.utc).timestamp() * 1000
         )
-        bars = load_bars(self.db_path, self.symbol, self.interval, "binance", start_ts, end_ts)
+        bars = load_bars(self.db_path, self.symbol, self.interval, self.exchange, start_ts, end_ts)
         print(f"Loaded {bars.shape[0]} bars, warming up JIT...", flush=True)
 
         # Warm up JIT compilation
@@ -497,18 +588,28 @@ class NumbaGridOptimizer:
         combos = self.param_space.grid()
         total = len(combos)
         t0 = time.time()
+        default_params = load_strategy_param_defaults(
+            self.strategy_path,
+            [
+                "CONSECUTIVE_THRESHOLD",
+                "POSITION_MULTIPLIER",
+                "INITIAL_POSITION_PCT",
+                "PROFIT_CANDLE_THRESHOLD",
+                "LEVERAGE",
+            ],
+        )
 
         if self.n_jobs == 1:
             # Single process - fastest for small grids
             results = []
             for i, params in enumerate(combos, 1):
-                sizing_lev = int(params.get("LEVERAGE", self.leverage))
+                sizing_lev = int(params.get("LEVERAGE", default_params.get("LEVERAGE", self.leverage)))
                 result = simulate(
                     bars,
-                    threshold=int(params.get("CONSECUTIVE_THRESHOLD", 5)),
-                    multiplier=float(params.get("POSITION_MULTIPLIER", 1.1)),
-                    initial_pct=float(params.get("INITIAL_POSITION_PCT", 0.01)),
-                    profit_threshold=int(params.get("PROFIT_CANDLE_THRESHOLD", 1)),
+                    threshold=int(params.get("CONSECUTIVE_THRESHOLD", default_params.get("CONSECUTIVE_THRESHOLD", 5))),
+                    multiplier=float(params.get("POSITION_MULTIPLIER", default_params.get("POSITION_MULTIPLIER", 1.1))),
+                    initial_pct=float(params.get("INITIAL_POSITION_PCT", default_params.get("INITIAL_POSITION_PCT", 0.01))),
+                    profit_threshold=int(params.get("PROFIT_CANDLE_THRESHOLD", default_params.get("PROFIT_CANDLE_THRESHOLD", 1))),
                     sizing_leverage=sizing_lev,
                     exchange_leverage=self.leverage,
                     commission_rate=self.commission_rate,
@@ -533,7 +634,7 @@ class NumbaGridOptimizer:
             trial_args = [
                 (
                     params,
-                    int(params.get("LEVERAGE", self.leverage)),
+                    int(params.get("LEVERAGE", default_params.get("LEVERAGE", self.leverage))),
                     self.leverage,
                     self.commission_rate,
                     self.funding_rate,
@@ -717,6 +818,7 @@ def save_top_reports(
     end: str,
     balance: float,
     leverage: int,
+    exchange: str = "binance",
 ) -> None:
     """Re-run top N trials and save full reports (with equity_curve + trades) to reports table."""
     from backtest.engine import BacktestEngine
@@ -748,7 +850,7 @@ def save_top_reports(
             db_path=db_path,
             symbol=symbol,
             interval=interval,
-            exchange="binance",
+            exchange=exchange,
             strategy_class=trial_class,
             balance=balance,
             leverage=leverage,
