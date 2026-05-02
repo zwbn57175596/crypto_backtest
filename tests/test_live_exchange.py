@@ -92,3 +92,85 @@ class TestLiveExchangeSync:
         )
         ex.sync()
         assert ex.get_position("ETHUSDT") is None
+
+
+class TestLiveExchangeSubmitOrder:
+    def test_dry_run_does_not_call_api(self):
+        from backtest.live_exchange import LiveExchange
+        client = _make_client(mark_price="50000")
+        ex = LiveExchange(client, "BTCUSDT", leverage=10, commission_rate=0.0004, dry_run=True)
+        ex.sync()
+        order = ex.submit_order("BTCUSDT", "buy", "market", 1000.0)
+        client.new_order.assert_not_called()
+        assert order.status == "filled"
+
+    def test_dry_run_prints_log(self, capsys):
+        from backtest.live_exchange import LiveExchange
+        ex = LiveExchange(_make_client(), "BTCUSDT", leverage=10, commission_rate=0.0004, dry_run=True)
+        ex.sync()
+        ex.submit_order("BTCUSDT", "sell", "market", 500.0)
+        captured = capsys.readouterr()
+        assert "dry-run" in captured.out.lower()
+
+    def test_market_order_converts_usdt_to_contracts(self):
+        from backtest.live_exchange import LiveExchange
+        client = _make_client(mark_price="50000")
+        client.new_order.return_value = {"orderId": 1, "status": "NEW"}
+        ex = LiveExchange(client, "BTCUSDT", leverage=10, commission_rate=0.0004)
+        ex.sync()
+        ex.submit_order("BTCUSDT", "buy", "market", 1000.0)
+        kwargs = client.new_order.call_args[1]
+        assert kwargs["symbol"] == "BTCUSDT"
+        assert kwargs["side"] == "BUY"
+        assert kwargs["type"] == "MARKET"
+        # 1000 USDT / 50000 price = 0.020 BTC (lot_step=0.001 → 3 decimal places)
+        assert kwargs["quantity"] == 0.020
+
+    def test_order_id_tracked_in_pending(self):
+        from backtest.live_exchange import LiveExchange
+        client = _make_client()
+        client.new_order.return_value = {"orderId": 42, "status": "NEW"}
+        ex = LiveExchange(client, "BTCUSDT", leverage=10, commission_rate=0.0004)
+        ex.sync()
+        ex.submit_order("BTCUSDT", "buy", "market", 500.0)
+        assert "42" in ex._pending_order_ids
+
+    def test_sell_side_uppercased(self):
+        from backtest.live_exchange import LiveExchange
+        client = _make_client()
+        client.new_order.return_value = {"orderId": 7, "status": "NEW"}
+        ex = LiveExchange(client, "BTCUSDT", leverage=10, commission_rate=0.0004)
+        ex.sync()
+        ex.submit_order("BTCUSDT", "sell", "market", 500.0)
+        assert client.new_order.call_args[1]["side"] == "SELL"
+
+
+class TestLiveExchangeWaitFills:
+    def test_clears_pending_when_filled(self):
+        from backtest.live_exchange import LiveExchange
+        client = _make_client()
+        client.new_order.return_value = {"orderId": 99, "status": "NEW"}
+        client.query_order.return_value = {"status": "FILLED"}
+        ex = LiveExchange(client, "BTCUSDT", leverage=10, commission_rate=0.0004)
+        ex.sync()
+        ex.submit_order("BTCUSDT", "buy", "market", 500.0)
+        assert "99" in ex._pending_order_ids
+        ex.wait_fills(timeout=5.0)
+        assert ex._pending_order_ids == []
+
+    def test_warns_when_order_never_fills(self, capsys):
+        from backtest.live_exchange import LiveExchange
+        client = _make_client()
+        client.query_order.return_value = {"status": "NEW"}
+        ex = LiveExchange(client, "BTCUSDT", leverage=10, commission_rate=0.0004)
+        ex._pending_order_ids = ["77"]
+        ex.wait_fills(timeout=0.01)   # expires immediately
+        captured = capsys.readouterr()
+        assert "77" in captured.out or "WARN" in captured.out
+
+    def test_no_api_call_when_no_pending(self):
+        from backtest.live_exchange import LiveExchange
+        client = _make_client()
+        ex = LiveExchange(client, "BTCUSDT", leverage=10, commission_rate=0.0004)
+        ex.wait_fills()
+        client.query_order.assert_not_called()

@@ -101,7 +101,56 @@ class LiveExchange:
 
     def submit_order(self, symbol: str, side: str, type_: str,
                      quantity: float, price: float | None = None) -> Order:
-        raise NotImplementedError("Implemented in Task 3")
+        order_id = uuid.uuid4().hex[:8]
+
+        if self._dry_run:
+            print(f"[dry-run] {side.upper()} {type_} {quantity:.2f} USDT @ {price or 'market'}")
+            return Order(
+                id=order_id, symbol=symbol, side=side, type=type_,
+                quantity=quantity, price=price, status="filled",
+                filled_price=self._current_price, filled_at=int(time.time() * 1000),
+                commission=quantity * self._commission_rate,
+            )
+
+        contract_qty = self._round_qty(quantity / self._current_price)
+        if contract_qty <= 0:
+            return Order(id=order_id, symbol=symbol, side=side, type=type_,
+                         quantity=quantity, price=price, status="canceled")
+
+        params: dict = {
+            "symbol": symbol,
+            "side": side.upper(),
+            "type": "MARKET" if type_ == "market" else "LIMIT",
+            "quantity": contract_qty,
+        }
+        if type_ == "limit" and price is not None:
+            params["price"] = price
+            params["timeInForce"] = "GTC"
+
+        resp = _retry(lambda: self._client.new_order(**params))
+        binance_id = str(resp["orderId"])
+        self._pending_order_ids.append(binance_id)
+        return Order(
+            id=binance_id, symbol=symbol, side=side, type=type_,
+            quantity=quantity, price=price, status="pending",
+        )
 
     def wait_fills(self, timeout: float = 30.0) -> None:
-        raise NotImplementedError("Implemented in Task 3")
+        if not self._pending_order_ids:
+            return
+        deadline = time.time() + timeout
+        remaining = list(self._pending_order_ids)
+        while remaining and time.time() < deadline:
+            still_pending = []
+            for oid in remaining:
+                resp = _retry(lambda oid=oid: self._client.query_order(
+                    symbol=self._symbol, orderId=int(oid)
+                ))
+                if resp["status"] not in ("FILLED", "CANCELED", "EXPIRED", "REJECTED"):
+                    still_pending.append(oid)
+            remaining = still_pending
+            if remaining:
+                time.sleep(0.5)
+        if remaining:
+            print(f"[WARN] orders not confirmed within {timeout}s: {remaining}")
+        self._pending_order_ids.clear()
