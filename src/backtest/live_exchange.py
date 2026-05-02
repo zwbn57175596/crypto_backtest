@@ -45,6 +45,7 @@ class LiveExchange:
                     if f["filterType"] == "LOT_SIZE":
                         self._lot_step = float(f["stepSize"])
                         return
+        raise ValueError(f"Symbol {self._symbol!r} not found in exchange_info")
 
     def _round_qty(self, qty: float) -> float:
         if self._lot_step <= 0:
@@ -56,7 +57,7 @@ class LiveExchange:
         balances = _retry(lambda: self._client.balance())
         for b in balances:
             if b["asset"] == "USDT":
-                self._balance = float(b["availableBalance"])
+                self._balance = float(b["balance"])
                 break
 
         positions = _retry(lambda: self._client.get_position_risk(symbol=self._symbol))
