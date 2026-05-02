@@ -4,3 +4,4 @@ backtest:
   commission_rate: 0.0004
   funding_rate: 0.0001
   maintenance_margin: 0.005
+  margin_mode: "isolated"

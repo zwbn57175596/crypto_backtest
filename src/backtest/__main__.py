@@ -42,7 +42,49 @@ def cmd_collect(args: argparse.Namespace) -> None:
     print("Done.")
 
 
-def cmd_run(args: argparse.Namespace) -> None:
+def _collect_strategy_params(strategy_class: type) -> dict:
+    """Snapshot UPPER_CASE class attributes (the strategy's tunable parameters)."""
+    params: dict = {}
+    for name in dir(strategy_class):
+        if not name.isupper() or name.startswith("_"):
+            continue
+        value = getattr(strategy_class, name, None)
+        if isinstance(value, (int, float, str, bool)):
+            params[name] = value
+    return params
+
+
+def _apply_extra_params(strategy_class: type, extra_args: list[str]) -> None:
+    it = iter(extra_args)
+    for token in it:
+        if not token.startswith("--"):
+            continue
+        key = token.lstrip("-")
+        try:
+            val_str = next(it)
+        except StopIteration:
+            continue
+        # Try uppercase first (strategy convention), then lowercase
+        attr_name = key.upper() if hasattr(strategy_class, key.upper()) else key
+        existing = getattr(strategy_class, attr_name, None)
+        if existing is not None:
+            try:
+                val = type(existing)(val_str)
+            except (ValueError, TypeError):
+                val = val_str
+        else:
+            try:
+                val = int(val_str)
+            except ValueError:
+                try:
+                    val = float(val_str)
+                except ValueError:
+                    val = val_str
+        setattr(strategy_class, attr_name, val)
+        print(f"  [param] {attr_name} = {val}")
+
+
+def cmd_run(args: argparse.Namespace, extra_args: list[str] | None = None) -> None:
     import yaml
     config_path = Path("config/default.yaml")
     config = {}
@@ -51,6 +93,11 @@ def cmd_run(args: argparse.Namespace) -> None:
             config = yaml.safe_load(f).get("backtest", {})
 
     strategy_class = _load_strategy(args.strategy)
+    if extra_args:
+        _apply_extra_params(strategy_class, extra_args)
+    if args.sizing_leverage is not None:
+        strategy_class.LEVERAGE = args.sizing_leverage
+        print(f"  [param] LEVERAGE (sizing) = {args.sizing_leverage}")
     db_path = args.db or str(Path("data") / "klines.db")
 
     engine = BacktestEngine(
@@ -63,11 +110,18 @@ def cmd_run(args: argparse.Namespace) -> None:
         maintenance_margin=config.get("maintenance_margin", 0.005),
         start=f"{args.start} 00:00:00" if args.start else None,
         end=f"{args.end} 23:59:59" if args.end else None,
+        margin_mode=args.margin_mode or config.get("margin_mode", "isolated"),
     )
 
     print(f"Running backtest: {strategy_class.__name__} on {args.symbol} {args.interval} ...")
     result = engine.run()
     report = Reporter.generate(result)
+
+    report["strategy_params"] = _collect_strategy_params(strategy_class)
+    report["run_leverage"] = engine.leverage
+    report["run_balance"] = engine.balance
+    report["run_start"] = args.start
+    report["run_end"] = args.end
 
     import json, sqlite3
     report_db = str(Path(db_path).parent / "reports.db")
@@ -109,14 +163,22 @@ def cmd_web(args: argparse.Namespace) -> None:
 def cmd_optimize(args: argparse.Namespace) -> None:
     from backtest.optimizer import (
         GridSearchOptimizer, NumbaGridOptimizer, OptunaOptimizer,
-        parse_params_string, save_results,
+        load_strategy_optimize_space, parse_params_string, save_results,
     )
 
-    param_space = parse_params_string(args.params)
     strategy_class = _load_strategy(args.strategy)
+    if args.params:
+        param_space = parse_params_string(args.params)
+    else:
+        param_space = load_strategy_optimize_space(args.strategy)
 
-    print(f"Optimizing {strategy_class.__name__}: {param_space.total_combinations} combinations, "
-          f"{args.n_jobs or 'auto'} workers, objective={args.objective}")
+    summary = (
+        f"Optimizing {strategy_class.__name__}: {param_space.total_combinations} combinations, "
+        f"{args.n_jobs or 'auto'} workers, objective={args.objective}"
+    )
+    if args.method == "cuda-auto":
+        summary += ", stage2=auto-refine"
+    print(summary)
 
     if args.method == "optuna":
         optimizer = OptunaOptimizer(
@@ -128,10 +190,12 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             end=args.end,
             balance=args.balance,
             leverage=args.leverage,
+            exchange=args.exchange,
             param_space=param_space,
             objective=args.objective,
             n_trials=args.n_trials,
             n_jobs=args.n_jobs or 1,
+            margin_mode=args.margin_mode,
         )
     elif args.method == "numba-grid":
         optimizer = NumbaGridOptimizer(
@@ -143,9 +207,40 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             end=args.end,
             balance=args.balance,
             leverage=args.leverage,
+            exchange=args.exchange,
             param_space=param_space,
             objective=args.objective,
             n_jobs=args.n_jobs,
+        )
+    elif args.method == "cuda-grid":
+        from backtest.cuda_runner import CudaGridOptimizer
+        optimizer = CudaGridOptimizer(
+            db_path=args.db or str(Path("data") / "klines.db"),
+            strategy_path=args.strategy,
+            symbol=args.symbol,
+            interval=args.interval,
+            start=args.start,
+            end=args.end,
+            balance=args.balance,
+            leverage=args.leverage,
+            exchange=args.exchange,
+            param_space=param_space,
+            objective=args.objective,
+        )
+    elif args.method == "cuda-auto":
+        from backtest.cuda_runner import CudaAutoOptimizer
+        optimizer = CudaAutoOptimizer(
+            db_path=args.db or str(Path("data") / "klines.db"),
+            strategy_path=args.strategy,
+            symbol=args.symbol,
+            interval=args.interval,
+            start=args.start,
+            end=args.end,
+            balance=args.balance,
+            leverage=args.leverage,
+            exchange=args.exchange,
+            param_space=param_space,
+            objective=args.objective,
         )
     else:
         optimizer = GridSearchOptimizer(
@@ -157,9 +252,11 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             end=args.end,
             balance=args.balance,
             leverage=args.leverage,
+            exchange=args.exchange,
             param_space=param_space,
             objective=args.objective,
             n_jobs=args.n_jobs,
+            margin_mode=args.margin_mode,
         )
 
     result = optimizer.run()
@@ -198,6 +295,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         end_date=args.end,
         result=result,
         top_n=save_n,
+        leverage=args.leverage,
     )
     saved = save_n if save_n else result.total_trials
     print(f"\nResults saved to database ({min(saved, result.total_trials)} rows).")
@@ -216,6 +314,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         end=args.end,
         balance=args.balance,
         leverage=args.leverage,
+        exchange=args.exchange,
     )
     print(f"Top {args.report_top} results saved as reports. View with: python -m backtest web")
 
@@ -240,7 +339,12 @@ def main() -> None:
     p_run.add_argument("--start", default=None)
     p_run.add_argument("--end", default=None)
     p_run.add_argument("--balance", type=float, default=None)
-    p_run.add_argument("--leverage", type=int, default=None)
+    p_run.add_argument("--leverage", type=int, default=None,
+                       help="Exchange leverage (for margin & liquidation)")
+    p_run.add_argument("--margin-mode", choices=["isolated", "cross"], default=None, dest="margin_mode",
+                       help="Margin mode (isolated=per-position, cross=account-wide)")
+    p_run.add_argument("--sizing-leverage", type=int, default=None, dest="sizing_leverage",
+                       help="Strategy sizing leverage (sets LEVERAGE class attr, used in _calc_quantity)")
     p_run.add_argument("--db", default=None)
 
     p_web = sub.add_parser("web", help="Start web report viewer")
@@ -256,10 +360,12 @@ def main() -> None:
     p_opt.add_argument("--end", required=True, help="YYYY-MM-DD")
     p_opt.add_argument("--balance", type=float, default=10000.0)
     p_opt.add_argument("--leverage", type=int, default=10)
-    p_opt.add_argument("--params", required=True, help="e.g. X=1:10:2,Y=a|b|c")
+    p_opt.add_argument("--margin-mode", choices=["isolated", "cross"], default="isolated", dest="margin_mode",
+                       help="Margin mode (isolated=per-position, cross=account-wide)")
+    p_opt.add_argument("--params", default=None, help="e.g. X=1:10:2,Y=a|b|c; omit to use strategy OPTIMIZE_SPACE")
     p_opt.add_argument("--objective", default="sharpe_ratio",
                        choices=["sharpe_ratio", "net_return", "sortino_ratio", "profit_factor", "win_rate"])
-    p_opt.add_argument("--method", default="grid", choices=["grid", "optuna", "numba-grid"])
+    p_opt.add_argument("--method", default="grid", choices=["grid", "optuna", "numba-grid", "cuda-grid", "cuda-auto"])
     p_opt.add_argument("--n-jobs", type=int, default=None)
     p_opt.add_argument("--n-trials", type=int, default=100, help="For optuna method")
     p_opt.add_argument("--top", type=int, default=10, help="Show top N results in console")
@@ -267,11 +373,11 @@ def main() -> None:
     p_opt.add_argument("--report-top", type=int, default=3, help="Save top N full reports (with equity curve)")
     p_opt.add_argument("--db", default=None)
 
-    args = parser.parse_args()
+    args, extra = parser.parse_known_args()
     if args.command == "collect":
         cmd_collect(args)
     elif args.command == "run":
-        cmd_run(args)
+        cmd_run(args, extra)
     elif args.command == "web":
         cmd_web(args)
     elif args.command == "optimize":

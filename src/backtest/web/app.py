@@ -6,10 +6,16 @@ from pathlib import Path
 
 
 def _migrate_db(db_path: str) -> None:
-    """Ensure optimize_results has batch_id column; backfill old rows."""
+    """Ensure optimize_results has batch_id and leverage columns; backfill old rows."""
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("ALTER TABLE optimize_results ADD COLUMN batch_id TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists or table doesn't exist
+
+    try:
+        conn.execute("ALTER TABLE optimize_results ADD COLUMN leverage REAL")
         conn.commit()
     except sqlite3.OperationalError:
         pass  # column already exists or table doesn't exist

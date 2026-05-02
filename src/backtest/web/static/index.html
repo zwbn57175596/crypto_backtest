@@ -133,10 +133,10 @@
       </div>
     </div>
   </div>
-  <!-- 优化参数 -->
+  <!-- 优化参数 / 策略参数 -->
   <div id="opt-params-section" class="section" style="display:none;">
     <div class="section-bar" onclick="toggleSection(this)">
-      <span class="arrow">▼</span><span class="title">优化参数</span>
+      <span class="arrow">▼</span><span class="title" id="opt-params-title">优化参数</span>
       <span class="card-score" id="opt-score-label" style="margin-left:auto;font-size:12px;color:#00d4aa;"></span>
     </div>
     <div class="section-body">
@@ -376,12 +376,14 @@ function loadReport(id) {
       { label: '总资金费用', value: (d.total_funding || 0).toFixed(2) + ' USDT', color: '#f59e0b' },
     ]);
 
-    // 优化参数卡片 (enhanced with batch context)
+    // 优化参数卡片 / 策略参数卡片
     const optSection = document.getElementById('opt-params-section');
+    const titleEl = document.getElementById('opt-params-title');
+    const scoreLabel = document.getElementById('opt-score-label');
+    const body = document.getElementById('opt-params-body');
     if (d.optimize_params) {
-      const scoreLabel = document.getElementById('opt-score-label');
+      titleEl.textContent = '优化参数';
       scoreLabel.textContent = `score: ${d.optimize_score.toFixed(4)} | ${d.optimize_objective}`;
-      const body = document.getElementById('opt-params-body');
       body.innerHTML = '';
 
       // Batch context section
@@ -412,6 +414,31 @@ function loadReport(id) {
         link.textContent = '查看该批次全部结果 →';
         body.appendChild(link);
       }
+
+      optSection.style.display = '';
+    } else if (d.strategy_params && Object.keys(d.strategy_params).length > 0) {
+      titleEl.textContent = '策略参数';
+      scoreLabel.textContent = '';
+      body.innerHTML = '';
+
+      // Run context (leverage / balance / 区间)
+      const ctxBits = [];
+      if (d.run_leverage != null) ctxBits.push(`<div>杠杆: <span class="highlight">${d.run_leverage}x</span></div>`);
+      if (d.run_balance != null) ctxBits.push(`<div>初始资金: <span class="highlight">${d.run_balance}</span> USDT</div>`);
+      if (d.run_start || d.run_end) ctxBits.push(`<div>回测区间: ${d.run_start || '?'} ~ ${d.run_end || '?'}</div>`);
+      if (ctxBits.length) {
+        const ctx = document.createElement('div');
+        ctx.className = 'batch-context';
+        ctx.innerHTML = ctxBits.join('');
+        body.appendChild(ctx);
+      }
+
+      Object.entries(d.strategy_params).forEach(([k, v]) => {
+        const row = document.createElement('div');
+        row.className = 'param-row';
+        row.innerHTML = `<span class="param-name">${k}</span><span class="param-value">${v}</span>`;
+        body.appendChild(row);
+      });
 
       optSection.style.display = '';
     } else {

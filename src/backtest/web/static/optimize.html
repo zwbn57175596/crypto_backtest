@@ -535,6 +535,7 @@ function getAllColumnDefs() {
   const paramNames = getParamNames();
   const cols = [{ key: 'rank', label: 'Rank' }];
   paramNames.forEach(p => cols.push({ key: 'param_' + p, label: p }));
+  cols.push({ key: 'leverage', label: '杠杆倍数' });
   cols.push({ key: 'score', label: 'Score' });
   cols.push({ key: 'net_return', label: 'Return' });
   cols.push({ key: 'max_drawdown', label: 'MaxDD' });
@@ -547,10 +548,17 @@ function getAllColumnDefs() {
   return cols;
 }
 
+function getLeverageOf(d) {
+  // Prefer per-trial LEVERAGE param if it was optimized; else fall back to the batch-level value.
+  const fromParams = d.params && (d.params.LEVERAGE ?? d.params.leverage);
+  if (fromParams !== undefined && fromParams !== null) return fromParams;
+  return d.leverage;
+}
+
 function getVisibleCols() {
   if (visibleCols) return visibleCols;
   const paramNames = getParamNames();
-  return ['rank', ...paramNames.map(p => 'param_' + p), 'score', 'net_return', 'max_drawdown', 'sharpe_ratio', 'win_rate'];
+  return ['rank', ...paramNames.map(p => 'param_' + p), 'leverage', 'score', 'net_return', 'max_drawdown', 'sharpe_ratio', 'win_rate'];
 }
 
 function toggleColMenu() {
@@ -602,6 +610,7 @@ function renderTable() {
     if (sortCol === 'rank') { av = allData.indexOf(a); bv = allData.indexOf(b); }
     else if (sortCol.startsWith('param_')) { const p = sortCol.slice(6); av = a.params[p]; bv = b.params[p]; }
     else if (sortCol === 'score') { av = a.score; bv = b.score; }
+    else if (sortCol === 'leverage') { av = getLeverageOf(a) ?? 0; bv = getLeverageOf(b) ?? 0; }
     else { av = a.report[sortCol] || 0; bv = b.report[sortCol] || 0; }
     return sortDir === 'asc' ? av - bv : bv - av;
   });
@@ -617,6 +626,10 @@ function renderTable() {
     shownCols.forEach(c => {
       if (c.key === 'rank') html += `<td>${i+1}</td>`;
       else if (c.key.startsWith('param_')) html += `<td>${d.params[c.key.slice(6)]}</td>`;
+      else if (c.key === 'leverage') {
+        const lv = getLeverageOf(d);
+        html += `<td>${lv == null ? '—' : (Number.isInteger(lv) ? lv : Number(lv).toFixed(2)) + 'x'}</td>`;
+      }
       else if (c.key === 'score') html += `<td><b>${d.score.toFixed(4)}</b></td>`;
       else if (c.key === 'net_return') {
         const ret = (d.report.net_return || 0) * 100;

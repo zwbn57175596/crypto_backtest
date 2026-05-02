@@ -12,6 +12,7 @@ class SimExchange:
         commission_rate: float,
         funding_rate: float,
         maintenance_margin: float,
+        margin_mode: str = "isolated",
     ):
         self.initial_balance = balance
         self.balance = balance
@@ -19,6 +20,7 @@ class SimExchange:
         self.commission_rate = commission_rate
         self.funding_rate = funding_rate
         self.maintenance_margin = maintenance_margin
+        self.margin_mode = margin_mode
 
         self._positions: dict[str, Position] = {}
         self._pending_orders: list[Order] = []
@@ -58,6 +60,7 @@ class SimExchange:
         self._match_orders(bar)
         self._update_unrealized_pnl(bar)
         self._check_liquidation(bar)
+        self._ensure_no_bankruptcy(bar)
         self._record_equity(bar)
 
     def _settle_funding(self, bar: Bar) -> None:
@@ -184,6 +187,12 @@ class SimExchange:
             pos.unrealized_pnl = pos.quantity * (pos.entry_price - bar.close) / pos.entry_price
 
     def _check_liquidation(self, bar: Bar) -> None:
+        if self.margin_mode == "isolated":
+            self._check_liquidation_isolated(bar)
+        else:
+            self._check_liquidation_cross(bar)
+
+    def _check_liquidation_isolated(self, bar: Bar) -> None:
         pos = self._positions.get(bar.symbol)
         if pos is None:
             return
@@ -202,6 +211,47 @@ class SimExchange:
             ))
             self.balance -= min(pos.margin, self.balance)
             del self._positions[bar.symbol]
+
+    def _check_liquidation_cross(self, bar: Bar) -> None:
+        if not self._positions:
+            return
+        total_equity = self.balance + sum(p.margin + p.unrealized_pnl for p in self._positions.values())
+        total_maintenance = sum(p.margin * self.maintenance_margin for p in self._positions.values())
+        if total_equity > total_maintenance and total_equity > 0:
+            return
+        for symbol, pos in list(self._positions.items()):
+            self._trades.append(Trade(
+                id=uuid.uuid4().hex[:8],
+                order_id="liquidation",
+                symbol=symbol,
+                side="sell" if pos.side == "long" else "buy",
+                price=bar.close,
+                quantity=pos.quantity,
+                pnl=pos.unrealized_pnl,
+                commission=0.0,
+                timestamp=bar.timestamp,
+            ))
+        self.balance = max(0.0, total_equity)
+        self._positions.clear()
+
+    def _ensure_no_bankruptcy(self, bar: Bar) -> None:
+        if self.balance < 0:
+            if self.margin_mode == "cross" and self._positions:
+                total_equity = self.balance + sum(p.margin + p.unrealized_pnl for p in self._positions.values())
+                for symbol, pos in list(self._positions.items()):
+                    self._trades.append(Trade(
+                        id=uuid.uuid4().hex[:8],
+                        order_id="liquidation",
+                        symbol=symbol,
+                        side="sell" if pos.side == "long" else "buy",
+                        price=bar.close,
+                        quantity=pos.quantity,
+                        pnl=pos.unrealized_pnl,
+                        commission=0.0,
+                        timestamp=bar.timestamp,
+                    ))
+                self.balance = max(0.0, total_equity)
+                self._positions.clear()
 
     def _record_equity(self, bar: Bar) -> None:
         equity = self.balance

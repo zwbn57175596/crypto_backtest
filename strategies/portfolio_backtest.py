@@ -17,10 +17,10 @@ SYMBOLS = [
 
 # ==================== 策略参数 ====================
 INITIAL_BALANCE = 1000  # 总初始资金 1000 USDT（所有币种共享）
-LEVERAGE = 50  # 杠杆倍数
-INITIAL_POSITION_PCT = 0.01  # 初次建仓比例（1%）
-CONSECUTIVE_THRESHOLD = 5  # 连续次数阈值（4次开始建仓）
-POSITION_MULTIPLIER = 1.1  # 加仓倍数
+LEVERAGE = 5  # 杠杆倍数
+INITIAL_POSITION_PCT = 0.15  # 初次建仓比例（1%）
+CONSECUTIVE_THRESHOLD = 8  # 连续次数阈值（4次开始建仓）
+POSITION_MULTIPLIER = 1.5  # 加仓倍数
 TAKER_FEE = 0.0005  # 吃单手续费 0.05%
 # 持仓盈利K线数量：连续 N 根与持仓方向一致的K线后平仓（做空+阴线、做多+阳线）
 # =1 表示出现1根盈利K线即平仓；=3 表示连续3根盈利K线后平仓；若不连续则立即平仓

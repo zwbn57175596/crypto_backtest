@@ -10,6 +10,28 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+### Token-Efficient Tooling (RTK)
+
+A global Claude Code `PreToolUse` hook (`rtk hook claude`) auto-rewrites Bash
+commands to `rtk <cmd>` for compact output (e.g. `pytest tests/` →
+`rtk pytest tests/`, `git status` → `rtk git status`). This is transparent and
+saves 60–90% of tokens on dev operations.
+
+**Auto-rewritten** (no action needed): `pytest`, `git`, `gh`, `grep`, `find`,
+`ls`, `tree`, `wc`, `diff`, `curl`, `docker`, `npm`, `cargo`, etc.
+
+**NOT auto-rewritten** — invoke `rtk` explicitly when output is large:
+- `rtk read PATH` — filtered file read for large reports / optimization output
+- `rtk summary <cmd>` — heuristic 2-line summary of any command
+- `rtk err <cmd>` — show only errors / warnings from a command
+
+Project commands (`python -m backtest run/optimize/collect/web`) are not
+wrapped by rtk; their CLI output is already compact.
+
+Meta: `rtk gain` shows current session savings, `rtk --version` verifies install
+(>= 0.38.0 expected). If rtk is not installed, the hook is a no-op — commands
+run unwrapped without errors, so contributors without rtk are unaffected.
+
 ### Common Commands
 ```bash
 # Run all tests
@@ -36,6 +58,14 @@ python -m backtest run --strategy strategies/example_ma_cross.py \
 
 # Start web server to view reports
 python -m backtest web --port 8000
+
+# CUDA GPU-accelerated optimization (requires NVIDIA GPU + numba)
+python -m backtest optimize --strategy strategies/consecutive_reverse.py \
+    --symbol BTCUSDT --interval 1h \
+    --start 2024-01-01 --end 2024-12-31 \
+    --balance 1000 --leverage 50 \
+    --params "CONSECUTIVE_THRESHOLD=3:8:1,POSITION_MULTIPLIER=1.0:1.5:0.1,INITIAL_POSITION_PCT=0.005:0.03:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1" \
+    --method cuda-grid --objective sharpe_ratio
 ```
 
 ## Architecture Overview
@@ -49,6 +79,8 @@ Event-driven backtesting engine with a clear data flow:
 - **BaseStrategy** — User-implemented strategy base class
 - **Reporter** — Collects trades and equity curve, computes 14 performance metrics
 - **DataCollector** — Fetches historical klines from Binance/OKX/HTX REST API → SQLite
+- **NumbaGridOptimizer** — CPU JIT-compiled grid search with multiprocessing
+- **CudaGridOptimizer** — GPU CUDA-accelerated grid search with auto-batching
 
 ### Event Loop Data Flow
 ```
@@ -149,13 +181,20 @@ Each bar triggers this sequence in `on_new_bar()`:
 
 ```
 src/backtest/
-├── __main__.py           # CLI entry point with 3 subcommands: collect/run/web
+├── __main__.py           # CLI entry point: collect/run/web/optimize
 ├── engine.py             # BacktestEngine — event loop
 ├── data_feed.py          # DataFeed — SQLite → klines stream
 ├── exchange.py           # SimExchange — order matching + position tracking
 ├── strategy.py           # BaseStrategy — user strategy base class
 ├── models.py             # Dataclasses: Bar, Order, Position, Trade
 ├── reporter.py           # Reporter — metric calculation
+├── optimizer.py          # Grid/Optuna/NumbaGrid optimizers
+├── numba_simulate.py     # Numba JIT CPU-compiled simulation kernel
+├── cuda_exchange.py      # CUDA device functions (fill_order, calc_quantity)
+├── cuda_runner.py        # CudaGridOptimizer — GPU grid search with auto-batching
+├── cuda_strategies/
+│   ├── __init__.py       # Strategy registry (name → kernel mapping)
+│   └── consecutive_reverse.py  # ConsecutiveReverse CUDA kernel
 ├── collector/
 │   ├── base.py           # BaseCollector — async API client
 │   ├── binance.py        # Binance collector (1500 klines/req)
@@ -182,7 +221,7 @@ tests/
 
 ## Data Models
 
-All are Python dataclasses in `/Users/zhaowei/GitHub/crypto_backtest/src/backtest/models.py`:
+All are Python dataclasses in `src/backtest/models.py`:
 
 ### Bar (OHLCV)
 ```python

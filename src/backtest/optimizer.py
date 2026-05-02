@@ -22,6 +22,10 @@ class OptimizeResult:
     elapsed_seconds: float
 
 
+def _is_int_value(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _parse_number(s: str):
     """Parse string to int or float."""
     try:
@@ -77,6 +81,99 @@ def _load_strategy_class(path: str):
     raise ValueError(f"No BaseStrategy subclass found in {path}")
 
 
+def expand_param_values(spec) -> list:
+    """Expand one parameter spec into a concrete value list."""
+    if isinstance(spec, list):
+        return list(spec)
+    if isinstance(spec, tuple) and len(spec) == 3:
+        min_val, max_val, step = spec
+        if _is_int_value(min_val) and _is_int_value(max_val) and _is_int_value(step):
+            return list(range(min_val, max_val + 1, step))
+
+        values = []
+        v = float(min_val)
+        while v <= float(max_val) + float(step) * 0.01:
+            values.append(round(v, 10))
+            v += float(step)
+        return values
+    return [spec]
+
+
+def load_strategy_optimize_space(strategy_path: str) -> ParamSpace:
+    """Load strategy-defined OPTIMIZE_SPACE into a ParamSpace."""
+    strategy_class = _load_strategy_class(strategy_path)
+    raw_space = getattr(strategy_class, "OPTIMIZE_SPACE", None)
+    if not raw_space:
+        raise ValueError(
+            f"Strategy '{strategy_class.__name__}' does not define OPTIMIZE_SPACE"
+        )
+    if not isinstance(raw_space, dict):
+        raise ValueError("OPTIMIZE_SPACE must be a dict of param specs")
+    return ParamSpace(raw_space)
+
+
+def load_strategy_auto_optimize_config(strategy_path: str) -> dict:
+    """Load strategy-defined AUTO_OPTIMIZE_CONFIG."""
+    strategy_class = _load_strategy_class(strategy_path)
+    config = getattr(strategy_class, "AUTO_OPTIMIZE_CONFIG", {})
+    if config is None:
+        return {}
+    if not isinstance(config, dict):
+        raise ValueError("AUTO_OPTIMIZE_CONFIG must be a dict")
+    return config
+
+
+def load_strategy_param_defaults(strategy_path: str, param_names: list[str] | None = None) -> dict:
+    """Load default class attribute values for strategy params."""
+    strategy_class = _load_strategy_class(strategy_path)
+    if param_names is None:
+        names = [
+            name for name in dir(strategy_class)
+            if name.isupper() and not name.startswith("_")
+        ]
+    else:
+        names = param_names
+    defaults = {}
+    for name in names:
+        if hasattr(strategy_class, name):
+            defaults[name] = getattr(strategy_class, name)
+    return defaults
+
+
+class ExplicitParamSpace:
+    """Parameter space backed by an explicit list of parameter combinations."""
+
+    def __init__(self, combos: list[dict]):
+        deduped: list[dict] = []
+        seen: set[str] = set()
+        for combo in combos:
+            key = json.dumps(combo, sort_keys=True)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(dict(combo))
+        self._combos = deduped
+
+    @property
+    def total_combinations(self) -> int:
+        return len(self._combos)
+
+    def grid(self) -> list[dict]:
+        return [dict(combo) for combo in self._combos]
+
+
+def merge_trials(*trial_groups: list[dict]) -> list[dict]:
+    """Merge trial lists by params, keeping the highest score per combination."""
+    merged: dict[str, dict] = {}
+    for trials in trial_groups:
+        for trial in trials:
+            key = json.dumps(trial["params"], sort_keys=True)
+            existing = merged.get(key)
+            if existing is None or trial["score"] > existing["score"]:
+                merged[key] = trial
+    return sorted(merged.values(), key=lambda item: item["score"], reverse=True)
+
+
 def _make_strategy(base_class: type, params: dict) -> type:
     """Create strategy subclass with overridden class attributes."""
     return type(f"{base_class.__name__}_trial", (base_class,), params)
@@ -100,6 +197,7 @@ def _run_single_trial(args: dict) -> dict:
         leverage=args["leverage"],
         start=args["start"],
         end=args["end"],
+        margin_mode=args.get("margin_mode", "isolated"),
     )
 
     result = engine.run()
@@ -122,21 +220,7 @@ class ParamSpace:
         self._space = space
         self._axes: dict[str, list] = {}
         for name, spec in space.items():
-            if isinstance(spec, list):
-                self._axes[name] = spec
-            elif isinstance(spec, tuple) and len(spec) == 3:
-                min_val, max_val, step = spec
-                if isinstance(min_val, int) and isinstance(max_val, int) and isinstance(step, int):
-                    self._axes[name] = list(range(min_val, max_val + 1, step))
-                else:
-                    values = []
-                    v = float(min_val)
-                    while v <= float(max_val) + float(step) * 0.01:
-                        values.append(round(v, 10))
-                        v += float(step)
-                    self._axes[name] = values
-            else:
-                raise ValueError(f"Invalid param spec for '{name}': {spec}")
+            self._axes[name] = expand_param_values(spec)
 
     @property
     def total_combinations(self) -> int:
@@ -168,9 +252,11 @@ class GridSearchOptimizer:
         end: str,
         balance: float = 10000.0,
         leverage: int = 10,
+        exchange: str = "binance",
         param_space: ParamSpace | None = None,
         objective: str = "sharpe_ratio",
         n_jobs: int | None = None,
+        margin_mode: str = "isolated",
     ):
         self.db_path = db_path
         self.strategy_path = strategy_path
@@ -180,9 +266,11 @@ class GridSearchOptimizer:
         self.end = f"{end} 23:59:59" if len(end) == 10 else end
         self.balance = balance
         self.leverage = leverage
+        self.exchange = exchange
         self.param_space = param_space or ParamSpace({})
         self.objective = objective
         self.n_jobs = n_jobs or os.cpu_count() or 1
+        self.margin_mode = margin_mode
 
     def run(self) -> OptimizeResult:
         """Run grid search over all parameter combinations."""
@@ -196,11 +284,12 @@ class GridSearchOptimizer:
                 "strategy_path": self.strategy_path,
                 "symbol": self.symbol,
                 "interval": self.interval,
-                "exchange": "binance",
+                "exchange": self.exchange,
                 "start": self.start,
                 "end": self.end,
                 "balance": self.balance,
                 "leverage": self.leverage,
+                "margin_mode": self.margin_mode,
                 "params": params,
                 "objective": self.objective,
             }
@@ -253,10 +342,12 @@ class OptunaOptimizer:
         end: str,
         balance: float = 10000.0,
         leverage: int = 10,
+        exchange: str = "binance",
         param_space: ParamSpace | None = None,
         objective: str = "sharpe_ratio",
         n_trials: int = 100,
         n_jobs: int = 1,
+        margin_mode: str = "isolated",
     ):
         try:
             import optuna  # noqa: F401
@@ -274,10 +365,12 @@ class OptunaOptimizer:
         self.end = f"{end} 23:59:59" if len(end) == 10 else end
         self.balance = balance
         self.leverage = leverage
+        self.exchange = exchange
         self.param_space = param_space or ParamSpace({})
         self.objective = objective
         self.n_trials = n_trials
         self.n_jobs = n_jobs
+        self.margin_mode = margin_mode
 
     def _suggest_params(self, trial) -> dict:
         """Map ParamSpace to Optuna trial suggestions."""
@@ -293,6 +386,8 @@ class OptunaOptimizer:
                     params[name] = trial.suggest_float(
                         name, float(min_val), float(max_val), step=float(step)
                     )
+            else:
+                params[name] = trial.suggest_categorical(name, [spec])
         return params
 
     def run(self) -> OptimizeResult:
@@ -310,11 +405,12 @@ class OptunaOptimizer:
                 "strategy_path": self.strategy_path,
                 "symbol": self.symbol,
                 "interval": self.interval,
-                "exchange": "binance",
+                "exchange": self.exchange,
                 "start": self.start,
                 "end": self.end,
                 "balance": self.balance,
                 "leverage": self.leverage,
+                "margin_mode": self.margin_mode,
                 "params": params,
                 "objective": self.objective,
             }
@@ -340,12 +436,14 @@ class OptunaOptimizer:
 
 def _numba_worker(args: tuple) -> dict:
     """Worker function for NumbaGridOptimizer multiprocessing."""
-    from backtest.numba_simulate import simulate
+    from backtest.numba_simulate import simulate_martingale, simulate_close_reopen
 
     bars, params, sizing_leverage, exchange_leverage, commission_rate, \
-        funding_rate, maintenance_margin, initial_balance, objective = args
+        funding_rate, maintenance_margin, initial_balance, objective, is_martingale = args
 
-    result = simulate(
+    simulate_fn = simulate_martingale if is_martingale else simulate_close_reopen
+
+    result = simulate_fn(
         bars,
         threshold=int(params.get("CONSECUTIVE_THRESHOLD", 5)),
         multiplier=float(params.get("POSITION_MULTIPLIER", 1.1)),
@@ -391,12 +489,14 @@ _shared_bars = None
 def _numba_worker_shared(args: tuple) -> dict:
     """Worker using module-level shared bars to avoid pickling large arrays."""
     global _shared_bars
-    from backtest.numba_simulate import simulate
+    from backtest.numba_simulate import simulate_martingale, simulate_close_reopen
 
     params, sizing_leverage, exchange_leverage, commission_rate, \
-        funding_rate, maintenance_margin, initial_balance, objective = args
+        funding_rate, maintenance_margin, initial_balance, objective, is_martingale = args
 
-    result = simulate(
+    simulate_fn = simulate_martingale if is_martingale else simulate_close_reopen
+
+    result = simulate_fn(
         _shared_bars,
         threshold=int(params.get("CONSECUTIVE_THRESHOLD", 5)),
         multiplier=float(params.get("POSITION_MULTIPLIER", 1.1)),
@@ -452,6 +552,7 @@ class NumbaGridOptimizer:
         end: str,
         balance: float = 10000.0,
         leverage: int = 10,
+        exchange: str = "binance",
         param_space: ParamSpace | None = None,
         objective: str = "sharpe_ratio",
         n_jobs: int | None = None,
@@ -467,6 +568,7 @@ class NumbaGridOptimizer:
         self.end = f"{end} 23:59:59" if len(end) == 10 else end
         self.balance = balance
         self.leverage = leverage
+        self.exchange = exchange
         self.param_space = param_space or ParamSpace({})
         self.objective = objective
         self.n_jobs = n_jobs or os.cpu_count() or 1
@@ -477,7 +579,12 @@ class NumbaGridOptimizer:
     def run(self) -> OptimizeResult:
         """Run grid search with Numba-accelerated simulation."""
         from datetime import datetime, timezone
-        from backtest.numba_simulate import load_bars, simulate
+        from backtest.numba_simulate import load_bars, simulate_martingale, simulate_close_reopen
+
+        # Detect strategy type (Martingale variant vs close+reopen)
+        strategy_class = _load_strategy_class(self.strategy_path)
+        is_martingale = "Martingale" in strategy_class.__name__
+        simulate_fn = simulate_martingale if is_martingale else simulate_close_reopen
 
         # Pre-load bars once
         start_ts = int(
@@ -488,27 +595,37 @@ class NumbaGridOptimizer:
             datetime.strptime(self.end, "%Y-%m-%d %H:%M:%S")
             .replace(tzinfo=timezone.utc).timestamp() * 1000
         )
-        bars = load_bars(self.db_path, self.symbol, self.interval, "binance", start_ts, end_ts)
+        bars = load_bars(self.db_path, self.symbol, self.interval, self.exchange, start_ts, end_ts)
         print(f"Loaded {bars.shape[0]} bars, warming up JIT...", flush=True)
 
         # Warm up JIT compilation
-        simulate(bars[:10], 5, 1.1, 0.01, 1, 50, 50, 0.0004, 0.0001, 0.005, 1000.0)
+        simulate_fn(bars[:10], 5, 1.1, 0.01, 1, 50, 50, 0.0004, 0.0001, 0.005, 1000.0)
 
         combos = self.param_space.grid()
         total = len(combos)
         t0 = time.time()
+        default_params = load_strategy_param_defaults(
+            self.strategy_path,
+            [
+                "CONSECUTIVE_THRESHOLD",
+                "POSITION_MULTIPLIER",
+                "INITIAL_POSITION_PCT",
+                "PROFIT_CANDLE_THRESHOLD",
+                "LEVERAGE",
+            ],
+        )
 
         if self.n_jobs == 1:
             # Single process - fastest for small grids
             results = []
             for i, params in enumerate(combos, 1):
-                sizing_lev = int(params.get("LEVERAGE", self.leverage))
-                result = simulate(
+                sizing_lev = int(params.get("LEVERAGE", default_params.get("LEVERAGE", self.leverage)))
+                result = simulate_fn(
                     bars,
-                    threshold=int(params.get("CONSECUTIVE_THRESHOLD", 5)),
-                    multiplier=float(params.get("POSITION_MULTIPLIER", 1.1)),
-                    initial_pct=float(params.get("INITIAL_POSITION_PCT", 0.01)),
-                    profit_threshold=int(params.get("PROFIT_CANDLE_THRESHOLD", 1)),
+                    threshold=int(params.get("CONSECUTIVE_THRESHOLD", default_params.get("CONSECUTIVE_THRESHOLD", 5))),
+                    multiplier=float(params.get("POSITION_MULTIPLIER", default_params.get("POSITION_MULTIPLIER", 1.1))),
+                    initial_pct=float(params.get("INITIAL_POSITION_PCT", default_params.get("INITIAL_POSITION_PCT", 0.01))),
+                    profit_threshold=int(params.get("PROFIT_CANDLE_THRESHOLD", default_params.get("PROFIT_CANDLE_THRESHOLD", 1))),
                     sizing_leverage=sizing_lev,
                     exchange_leverage=self.leverage,
                     commission_rate=self.commission_rate,
@@ -533,13 +650,14 @@ class NumbaGridOptimizer:
             trial_args = [
                 (
                     params,
-                    int(params.get("LEVERAGE", self.leverage)),
+                    int(params.get("LEVERAGE", default_params.get("LEVERAGE", self.leverage))),
                     self.leverage,
                     self.commission_rate,
                     self.funding_rate,
                     self.maintenance_margin,
                     self.balance,
                     self.objective,
+                    is_martingale,
                 )
                 for params in combos
             ]
@@ -586,6 +704,7 @@ def save_results(
     end_date: str,
     result: OptimizeResult,
     top_n: int | None = 1000,
+    leverage: int | None = None,
 ) -> None:
     """Save top N optimization trials to SQLite (default: top 1000)."""
     from datetime import datetime, timezone
@@ -604,13 +723,21 @@ def save_results(
             params_json TEXT NOT NULL,
             report_json TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            batch_id TEXT
+            batch_id TEXT,
+            leverage REAL
         )
     """)
 
     # Idempotent migration — add batch_id column if not present
     try:
         conn.execute("ALTER TABLE optimize_results ADD COLUMN batch_id TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+    # Idempotent migration — add leverage column if not present
+    try:
+        conn.execute("ALTER TABLE optimize_results ADD COLUMN leverage REAL")
         conn.commit()
     except sqlite3.OperationalError:
         pass  # column already exists
@@ -636,14 +763,15 @@ def save_results(
             json.dumps(trial.get("report", {}), sort_keys=True),
             now,
             batch_id,
+            leverage,
         )
         for trial in trials
     ]
 
     conn.executemany(
         "INSERT INTO optimize_results "
-        "(strategy, symbol, interval, start_date, end_date, objective, score, params_json, report_json, created_at, batch_id) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "(strategy, symbol, interval, start_date, end_date, objective, score, params_json, report_json, created_at, batch_id, leverage) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         rows,
     )
     conn.commit()
@@ -717,6 +845,7 @@ def save_top_reports(
     end: str,
     balance: float,
     leverage: int,
+    exchange: str = "binance",
 ) -> None:
     """Re-run top N trials and save full reports (with equity_curve + trades) to reports table."""
     from backtest.engine import BacktestEngine
@@ -748,7 +877,7 @@ def save_top_reports(
             db_path=db_path,
             symbol=symbol,
             interval=interval,
-            exchange="binance",
+            exchange=exchange,
             strategy_class=trial_class,
             balance=balance,
             leverage=leverage,
