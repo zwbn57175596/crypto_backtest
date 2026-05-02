@@ -271,19 +271,26 @@ if HAS_CUDA:
                             pend_qty_1 = reopen_qty
                             n_pending = 2
                 else:
-                    # Loss candle - add to contrarian position up to current target size
+                    # Loss candle - close immediately + try reopen (not martingale add)
                     profit_candle_count = 0
-                    target_qty = device_calc_quantity(
+                    if pos_side == LONG:
+                        pend_side_0 = SELL
+                    else:
+                        pend_side_0 = BUY
+                    pend_qty_0 = pos_qty
+                    n_pending = 1
+
+                    # Try reopen contrarian
+                    reopen_qty = device_calc_quantity(
                         consecutive_count, threshold, balance, initial_pct, multiplier, sizing_leverage
                     )
-                    add_qty = target_qty - pos_qty
-                    if add_qty > 0:
-                        if pos_side == LONG:
-                            pend_side_0 = BUY
+                    if reopen_qty > 0:
+                        if direction == 1:
+                            pend_side_1 = SELL
                         else:
-                            pend_side_0 = SELL
-                        pend_qty_0 = add_qty
-                        n_pending = 1
+                            pend_side_1 = BUY
+                        pend_qty_1 = reopen_qty
+                        n_pending = 2
 
         # === Compute final metrics ===
         final_equity = balance
