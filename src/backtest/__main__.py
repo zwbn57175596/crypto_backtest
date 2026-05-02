@@ -83,6 +83,9 @@ def cmd_run(args: argparse.Namespace, extra_args: list[str] | None = None) -> No
     strategy_class = _load_strategy(args.strategy)
     if extra_args:
         _apply_extra_params(strategy_class, extra_args)
+    if args.sizing_leverage is not None:
+        strategy_class.LEVERAGE = args.sizing_leverage
+        print(f"  [param] LEVERAGE (sizing) = {args.sizing_leverage}")
     db_path = args.db or str(Path("data") / "klines.db")
 
     engine = BacktestEngine(
@@ -314,7 +317,10 @@ def main() -> None:
     p_run.add_argument("--start", default=None)
     p_run.add_argument("--end", default=None)
     p_run.add_argument("--balance", type=float, default=None)
-    p_run.add_argument("--leverage", type=int, default=None)
+    p_run.add_argument("--leverage", type=int, default=None,
+                       help="Exchange leverage (for margin & liquidation)")
+    p_run.add_argument("--sizing-leverage", type=int, default=None, dest="sizing_leverage",
+                       help="Strategy sizing leverage (sets LEVERAGE class attr, used in _calc_quantity)")
     p_run.add_argument("--db", default=None)
 
     p_web = sub.add_parser("web", help="Start web report viewer")

@@ -369,26 +369,19 @@ def simulate(
                         pend_qty_1 = reopen_qty
                         n_pending = 2
             else:
-                # Loss candle - close immediately
-                if pos_side == _LONG:
-                    pend_side_0 = _SELL
-                else:
-                    pend_side_0 = _BUY
-                pend_qty_0 = pos_qty
-                n_pending = 1
+                # Loss candle - add to contrarian position up to current target size
                 profit_candle_count = 0
-
-                # Try reopen after close
-                reopen_qty = _calc_quantity(
+                target_qty = _calc_quantity(
                     consecutive_count, threshold, balance, initial_pct, multiplier, sizing_leverage
                 )
-                if reopen_qty > 0:
-                    if direction == 1:
-                        pend_side_1 = _SELL
+                add_qty = target_qty - pos_qty
+                if add_qty > 0:
+                    if pos_side == _LONG:
+                        pend_side_0 = _BUY
                     else:
-                        pend_side_1 = _BUY
-                    pend_qty_1 = reopen_qty
-                    n_pending = 2
+                        pend_side_0 = _SELL
+                    pend_qty_0 = add_qty
+                    n_pending = 1
 
     # === Compute final metrics ===
     final_equity = balance

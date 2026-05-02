@@ -1,13 +1,13 @@
 """
-Consecutive Reverse Strategy - 连续K线反转策略 (close+reopen 版)
+Consecutive Reverse Martingale Strategy - 连续K线反转 + 马丁加仓策略
 
-基于连续同向K线后反向开仓的均值回归策略。
+基于连续同向K线后反向开仓的均值回归策略（马丁加仓版本）。
 当连续N根同向K线出现时，认为趋势过度延伸，反向建仓。
-亏损K线立即平仓并按当前 streak 重开新仓（每次重开都以当前价为均价，爆仓距固定 = 1/exchange_leverage）。
+亏损K线时按目标仓位补差加仓（马丁策略），盈利K线达到阈值后平仓。
 
-与 ConsecutiveReverseMartingaleStrategy（马丁加仓版本）的区别:
-  - 亏损K线: 此版本立即 close + reopen（止损重开）
-  - 马丁版本: 亏损K线只补差加仓，不平仓
+与 ConsecutiveReverseStrategy（close+reopen 版本）的区别:
+  - 亏损K线: 此版本不平仓，只补差加仓 (martingale)
+  - 盈利K线: 与原版相同，达到阈值后平仓
 
 杠杆说明（两个独立参数）:
   --leverage        交易所杠杆，决定保证金比例和强平线（margin = qty / leverage）
@@ -15,8 +15,8 @@ Consecutive Reverse Strategy - 连续K线反转策略 (close+reopen 版)
                     首笔名义值 = balance × INITIAL_POSITION_PCT × LEVERAGE(sizing)
                     必须确保 首笔名义值 / exchange_leverage <= balance
 
-运行方式:
-    python -m backtest run --strategy strategies/consecutive_reverse.py \
+运行方式（示例参数，以优化器最优为准）:
+    python -m backtest run --strategy strategies/consecutive_reverse_martingale.py \
         --symbol BTCUSDT --interval 1h \
         --start 2020-01-01 --end 2026-03-30 \
         --balance 1000 --leverage 50 \
@@ -26,22 +26,29 @@ Consecutive Reverse Strategy - 连续K线反转策略 (close+reopen 版)
         --position_multiplier 2.6 \
         --profit_candle_threshold 2
 
-参数优化（注意: CUDA kernel 当前实现的是马丁版本逻辑，
-        本策略 close+reopen 版只能用 grid 或 numba-grid 方法）:
-    python -m backtest optimize --strategy strategies/consecutive_reverse.py \
+
+参数优化:
+    python -m backtest optimize --strategy strategies/consecutive_reverse_martingale.py \
         --symbol BTCUSDT --interval 1h \
         --start 2020-01-01 --end 2026-03-30 \
         --balance 1000 --leverage 50 \
-        --params "CONSECUTIVE_THRESHOLD=2:8:1,POSITION_MULTIPLIER=1.0:3.0:0.1,INITIAL_POSITION_PCT=0.005:0.1:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1,LEVERAGE=1:50:2" \
-        --method numba-grid --objective sharpe_ratio
+        --params "CONSECUTIVE_THRESHOLD=2:8:1,POSITION_MULTIPLIER=0.6:2.0:0.05,INITIAL_POSITION_PCT=0.005:0.03:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1" \
+        --method cuda-grid --objective sharpe_ratio
+
+自动 CUDA 寻优:
+    python -m backtest optimize --strategy strategies/consecutive_reverse_martingale.py \
+        --symbol BTCUSDT --interval 1h \
+        --start 2020-01-01 --end 2025-12-31 \
+        --balance 1000 \
+        --method cuda-auto --objective sharpe_ratio
 """
 
 from backtest.strategy import BaseStrategy
 from backtest.models import Bar, Position
 
 
-class ConsecutiveReverseStrategy(BaseStrategy):
-    """连续K线反转策略 - close+reopen 版"""
+class ConsecutiveReverseMartingaleStrategy(BaseStrategy):
+    """连续K线反转策略 - 马丁加仓版"""
 
     # ==================== 可优化参数 ====================
     CONSECUTIVE_THRESHOLD = 5       # 连续K线触发阈值
@@ -53,17 +60,17 @@ class ConsecutiveReverseStrategy(BaseStrategy):
     # ==================== 内置搜索空间 ====================
     OPTIMIZE_SPACE = {
         "CONSECUTIVE_THRESHOLD": (2, 8, 1),
-        "POSITION_MULTIPLIER": (1.0, 3.0, 0.1),
-        "INITIAL_POSITION_PCT": (0.005, 0.1, 0.005),
-        "PROFIT_CANDLE_THRESHOLD": (1, 5, 1),
-        "LEVERAGE": (1, 50, 2),
+        "POSITION_MULTIPLIER": (1.0, 1.5, 0.1),
+        "INITIAL_POSITION_PCT": (0.005, 0.03, 0.005),
+        "PROFIT_CANDLE_THRESHOLD": (1, 10, 1),
+        "LEVERAGE": (1, 50, 3),
     }
     AUTO_OPTIMIZE_CONFIG = {
         "refine_top_k": 8,
         "refine_space": {
             "CONSECUTIVE_THRESHOLD": {"radius": 1, "step": 1},
-            "POSITION_MULTIPLIER": {"radius": 0.2, "step": 0.05},
-            "INITIAL_POSITION_PCT": {"radius": 0.01, "step": 0.0025, "min": 0.0025, "max": 0.15},
+            "POSITION_MULTIPLIER": {"radius": 0.1, "step": 0.05},
+            "INITIAL_POSITION_PCT": {"radius": 0.005, "step": 0.0025, "min": 0.0025, "max": 0.04},
             "PROFIT_CANDLE_THRESHOLD": {"radius": 1, "step": 1},
             "LEVERAGE": {"radius": 3, "step": 1},
         },
@@ -92,10 +99,9 @@ class ConsecutiveReverseStrategy(BaseStrategy):
                 self._profit_candle_count = 0
                 self._try_open(direction)
         else:
-            # Loss candle - close immediately and reopen at current target size
-            self.close()
+            # Loss candle - streak continues, add to contrarian position instead of close+reopen
             self._profit_candle_count = 0
-            self._try_open(direction)
+            self._add_position(direction)
 
     def _get_direction(self, bar: Bar) -> int:
         """判断K线方向: +1 阳线, -1 阴线, 0 十字星"""
@@ -140,3 +146,34 @@ class ConsecutiveReverseStrategy(BaseStrategy):
         if pos.side == "short" and direction == -1:
             return True
         return False
+
+    # ==================== 辅助方法 ====================
+
+    def _add_position(self, direction: int) -> None:
+        """加仓至当前连续K线对应的目标仓位，只补差值，节省手续费"""
+        quantity = self._calc_quantity()
+        if quantity <= 0:
+            return
+        pos = self.position
+        if pos is None:
+            return
+        add_qty = quantity - pos.quantity
+        if add_qty <= 0:
+            return
+        if pos.side == "long":
+            self.buy(add_qty)
+        else:
+            self.sell(add_qty)
+
+    def _reduce_position(self, target_quantity: float) -> None:
+        """减仓到目标量（预留，当前未在 on_bar 中调用）"""
+        pos = self.position
+        if pos is None:
+            return
+        reduce_qty = pos.quantity - target_quantity
+        if reduce_qty <= 0:
+            return
+        if pos.side == "long":
+            self.sell(reduce_qty)
+        else:
+            self.buy(reduce_qty)
