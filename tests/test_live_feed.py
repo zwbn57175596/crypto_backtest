@@ -80,3 +80,86 @@ class TestLiveFeedIteration:
             next(iter(feed))
 
         assert feed._last_bar_ts == ts1
+
+
+class TestLiveFeedBackfill:
+    def test_backfill_yields_missing_bar(self):
+        from backtest.live_feed import LiveFeed
+        ts_base = 1_700_000_000_000
+        interval_ms = 3_600_000  # 1h
+
+        ts1 = ts_base
+        ts2 = ts_base + interval_ms   # missing bar
+        ts3 = ts_base + 2 * interval_ms  # current bar
+
+        client = MagicMock()
+        # _backfill fetches ts2 from history
+        client.klines.return_value = [
+            _make_kline(ts2, close=200.0),
+        ]
+
+        feed = LiveFeed(client, "BTCUSDT", "1h", close_buffer_sec=0)
+        feed._last_bar_ts = ts1  # simulate: last bar was ts1
+
+        bars = list(feed._backfill(ts2, ts3))
+        assert len(bars) == 1
+        assert bars[0].timestamp == ts2
+        assert bars[0].close == 200.0
+
+    def test_backfill_excludes_current_bar_timestamp(self):
+        from backtest.live_feed import LiveFeed
+        ts_base = 1_700_000_000_000
+        interval_ms = 3_600_000
+
+        ts2 = ts_base + interval_ms
+        ts3 = ts_base + 2 * interval_ms
+
+        client = MagicMock()
+        # Binance returns ts2 AND ts3 — ts3 must be excluded (it's the "current" bar)
+        client.klines.return_value = [
+            _make_kline(ts2),
+            _make_kline(ts3),
+        ]
+
+        feed = LiveFeed(client, "BTCUSDT", "1h", close_buffer_sec=0)
+        feed._last_bar_ts = ts_base
+
+        bars = list(feed._backfill(ts2, ts3))
+        assert len(bars) == 1
+        assert bars[0].timestamp == ts2
+
+    def test_backfill_updates_last_bar_ts(self):
+        from backtest.live_feed import LiveFeed
+        ts_base = 1_700_000_000_000
+        interval_ms = 3_600_000
+
+        ts2 = ts_base + interval_ms
+        ts3 = ts_base + 2 * interval_ms
+
+        client = MagicMock()
+        client.klines.return_value = [_make_kline(ts2)]
+
+        feed = LiveFeed(client, "BTCUSDT", "1h", close_buffer_sec=0)
+        feed._last_bar_ts = ts_base
+
+        list(feed._backfill(ts2, ts3))
+        assert feed._last_bar_ts == ts2
+
+    def test_no_gap_no_backfill_called(self):
+        from backtest.live_feed import LiveFeed
+        ts1 = 1_700_000_000_000
+        ts2 = ts1 + 3_600_000
+
+        client = MagicMock()
+        client.klines.return_value = [_make_kline(ts1), _make_kline(ts2)]
+
+        feed = LiveFeed(client, "BTCUSDT", "1h", close_buffer_sec=0)
+        feed._last_bar_ts = ts1  # last bar was ts1, next expected ts2 — no gap
+
+        with patch("backtest.live_feed.time.sleep"), \
+             patch("backtest.live_feed.time.time", return_value=float(ts2 // 1000 + 10)):
+            bar = next(iter(feed))
+
+        # klines called once (for the regular poll), not for backfill
+        assert client.klines.call_count == 1
+        assert bar.timestamp == ts1
