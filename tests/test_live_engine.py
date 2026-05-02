@@ -1,6 +1,5 @@
 from strategies.consecutive_reverse import ConsecutiveReverseStrategy
 from unittest.mock import MagicMock
-from backtest.models import Position
 
 
 def _make_exchange():
