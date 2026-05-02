@@ -43,9 +43,10 @@ Consecutive Reverse Martingale Strategy - 连续K线反转策略（Martingale加
 自动 CUDA 寻优:
     python -m backtest optimize --strategy strategies/consecutive_reverse_martingale.py \
         --symbol BTCUSDT --interval 1h \
-        --start 2020-01-01 --end 2025-12-31 \
+        --start 2020-01-01 --end 2026-03-30 \
         --balance 1000 --leverage 50 \
-        --method cuda-auto --objective sharpe_ratio
+        --params "CONSECUTIVE_THRESHOLD=3:8:1,POSITION_MULTIPLIER=0.1:3.0:0.1,INITIAL_POSITION_PCT=0.005:0.3:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1,LEVERAGE=2:50:2" \
+        --method cuda-grid --objective sharpe_ratio
 """
 
 from backtest.strategy import BaseStrategy

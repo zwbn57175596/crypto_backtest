@@ -25,7 +25,7 @@ Consecutive Reverse Strategy - 连续K线反转策略（平仓-重开版本）
         --symbol BTCUSDT --interval 1h \
         --start 2020-01-01 --end 2026-03-30 \
         --balance 1000 --leverage 50 \
-        --params "CONSECUTIVE_THRESHOLD=3:8:1,POSITION_MULTIPLIER=1.0:1.5:0.1,INITIAL_POSITION_PCT=0.005:0.03:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1" \
+        --params "CONSECUTIVE_THRESHOLD=3:8:1,POSITION_MULTIPLIER=0.1:3.0:0.1,INITIAL_POSITION_PCT=0.005:0.3:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1,LEVERAGE=2:50:2" \
         --method grid --objective sharpe_ratio
 
 参数优化 (GPU 加速):
@@ -33,7 +33,7 @@ Consecutive Reverse Strategy - 连续K线反转策略（平仓-重开版本）
         --symbol BTCUSDT --interval 1h \
         --start 2020-01-01 --end 2026-03-30 \
         --balance 1000 --leverage 50 \
-        --params "CONSECUTIVE_THRESHOLD=3:8:1,POSITION_MULTIPLIER=1.0:1.5:0.1,INITIAL_POSITION_PCT=0.005:0.03:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1" \
+        --params "CONSECUTIVE_THRESHOLD=3:8:1,POSITION_MULTIPLIER=0.1:3.0:0.1,INITIAL_POSITION_PCT=0.005:0.3:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1,LEVERAGE=2:50:2" \
         --method cuda-grid --objective sharpe_ratio
 """
 
