@@ -1,6 +1,7 @@
 import math
 import time
 import uuid
+from typing import Callable, TypeVar
 
 from backtest.models import Order, Position
 
@@ -9,8 +10,10 @@ try:
 except ImportError:
     UMFutures = None
 
+_T = TypeVar("_T")
 
-def _retry(fn, attempts: int = 3, backoff: float = 2.0):
+
+def _retry(fn: Callable[[], _T], attempts: int = 3, backoff: float = 2.0) -> _T:
     last_exc = None
     for i in range(attempts):
         try:
@@ -57,7 +60,7 @@ class LiveExchange:
         balances = _retry(lambda: self._client.balance())
         for b in balances:
             if b["asset"] == "USDT":
-                self._balance = float(b["balance"])
+                self._balance = float(b["availableBalance"])
                 break
 
         positions = _retry(lambda: self._client.get_position_risk(symbol=self._symbol))
