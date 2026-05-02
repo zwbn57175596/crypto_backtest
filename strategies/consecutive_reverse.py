@@ -1,39 +1,22 @@
 """
-Consecutive Reverse Strategy - 连续K线反转策略 (close+reopen 版)
+Consecutive Reverse Strategy - 连续K线反转策略
 
 基于连续同向K线后反向开仓的均值回归策略。
 当连续N根同向K线出现时，认为趋势过度延伸，反向建仓。
-亏损K线立即平仓并按当前 streak 重开新仓（每次重开都以当前价为均价，爆仓距固定 = 1/exchange_leverage）。
-
-与 ConsecutiveReverseMartingaleStrategy（马丁加仓版本）的区别:
-  - 亏损K线: 此版本立即 close + reopen（止损重开）
-  - 马丁版本: 亏损K线只补差加仓，不平仓
-
-杠杆说明（两个独立参数）:
-  --leverage        交易所杠杆，决定保证金比例和强平线（margin = qty / leverage）
-  --sizing-leverage 策略仓位杠杆（对应 LEVERAGE 类属性），决定开仓名义价值
-                    首笔名义值 = balance × INITIAL_POSITION_PCT × LEVERAGE(sizing)
-                    必须确保 首笔名义值 / exchange_leverage <= balance
 
 运行方式:
     python -m backtest run --strategy strategies/consecutive_reverse.py \
         --symbol BTCUSDT --interval 1h \
-        --start 2020-01-01 --end 2026-03-30 \
-        --balance 1000 --leverage 50 \
-        --sizing-leverage 21 \
-        --initial_position_pct 0.07 \
-        --consecutive_threshold 7 \
-        --position_multiplier 2.6 \
-        --profit_candle_threshold 2
+        --start 2024-01-01 --end 2024-12-31 \
+        --balance 1000 --leverage 50
 
-参数优化（注意: CUDA kernel 当前实现的是马丁版本逻辑，
-        本策略 close+reopen 版只能用 grid 或 numba-grid 方法）:
+参数优化:
     python -m backtest optimize --strategy strategies/consecutive_reverse.py \
         --symbol BTCUSDT --interval 1h \
-        --start 2020-01-01 --end 2026-03-30 \
+        --start 2024-01-01 --end 2024-12-31 \
         --balance 1000 --leverage 50 \
-        --params "CONSECUTIVE_THRESHOLD=2:8:1,POSITION_MULTIPLIER=1.0:3.0:0.1,INITIAL_POSITION_PCT=0.005:0.1:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1,LEVERAGE=1:50:2" \
-        --method numba-grid --objective sharpe_ratio
+        --params "CONSECUTIVE_THRESHOLD=3:8:1,POSITION_MULTIPLIER=1.0:1.5:0.1,INITIAL_POSITION_PCT=0.005:0.03:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1" \
+        --method grid --objective sharpe_ratio
 """
 
 from backtest.strategy import BaseStrategy
@@ -41,7 +24,7 @@ from backtest.models import Bar, Position
 
 
 class ConsecutiveReverseStrategy(BaseStrategy):
-    """连续K线反转策略 - close+reopen 版"""
+    """连续K线反转策略"""
 
     # ==================== 可优化参数 ====================
     CONSECUTIVE_THRESHOLD = 5       # 连续K线触发阈值
@@ -49,25 +32,6 @@ class ConsecutiveReverseStrategy(BaseStrategy):
     INITIAL_POSITION_PCT = 0.01     # 初始仓位比例（占余额）
     PROFIT_CANDLE_THRESHOLD = 1     # 盈利K线平仓阈值
     LEVERAGE = 50                   # 杠杆倍数
-
-    # ==================== 内置搜索空间 ====================
-    OPTIMIZE_SPACE = {
-        "CONSECUTIVE_THRESHOLD": (2, 8, 1),
-        "POSITION_MULTIPLIER": (1.0, 3.0, 0.1),
-        "INITIAL_POSITION_PCT": (0.005, 0.1, 0.005),
-        "PROFIT_CANDLE_THRESHOLD": (1, 5, 1),
-        "LEVERAGE": (1, 50, 2),
-    }
-    AUTO_OPTIMIZE_CONFIG = {
-        "refine_top_k": 8,
-        "refine_space": {
-            "CONSECUTIVE_THRESHOLD": {"radius": 1, "step": 1},
-            "POSITION_MULTIPLIER": {"radius": 0.2, "step": 0.05},
-            "INITIAL_POSITION_PCT": {"radius": 0.01, "step": 0.0025, "min": 0.0025, "max": 0.15},
-            "PROFIT_CANDLE_THRESHOLD": {"radius": 1, "step": 1},
-            "LEVERAGE": {"radius": 3, "step": 1},
-        },
-    }
 
     def on_init(self) -> None:
         self._consecutive_count = 0
@@ -92,7 +56,7 @@ class ConsecutiveReverseStrategy(BaseStrategy):
                 self._profit_candle_count = 0
                 self._try_open(direction)
         else:
-            # Loss candle - close immediately and reopen at current target size
+            # Loss candle - close immediately
             self.close()
             self._profit_candle_count = 0
             self._try_open(direction)
@@ -140,3 +104,34 @@ class ConsecutiveReverseStrategy(BaseStrategy):
         if pos.side == "short" and direction == -1:
             return True
         return False
+
+    # ==================== 预留方法（未激活）====================
+
+    def _add_position(self, direction: int) -> None:
+        """加仓（预留，当前未在 on_bar 中调用）"""
+        quantity = self._calc_quantity()
+        if quantity <= 0:
+            return
+        pos = self.position
+        if pos is None:
+            return
+        add_qty = quantity - pos.quantity
+        if add_qty <= 0:
+            return
+        if pos.side == "long":
+            self.buy(add_qty)
+        else:
+            self.sell(add_qty)
+
+    def _reduce_position(self, target_quantity: float) -> None:
+        """减仓到目标量（预留，当前未在 on_bar 中调用）"""
+        pos = self.position
+        if pos is None:
+            return
+        reduce_qty = pos.quantity - target_quantity
+        if reduce_qty <= 0:
+            return
+        if pos.side == "long":
+            self.sell(reduce_qty)
+        else:
+            self.buy(reduce_qty)
