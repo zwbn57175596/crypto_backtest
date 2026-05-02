@@ -43,7 +43,9 @@ crypto_backtest/
 │       └── static/
 │           └── index.html        # 单页报告页面 (ECharts)
 ├── strategies/
-│   └── example_ma_cross.py       # 示例：均线交叉策略
+│   ├── example_ma_cross.py       # 示例：均线交叉策略
+│   ├── consecutive_reverse.py    # ConsecutiveReverse（平仓-重开版本）
+│   └── consecutive_reverse_martingale.py  # ConsecutiveReverse（Martingale加仓版本）
 ├── config/
 │   └── default.yaml              # 默认回测配置
 ├── data/
@@ -180,13 +182,22 @@ python -m backtest optimize \
     --params "short_period=5:15:1,long_period=20:40:5" \
     --method grid --objective sharpe_ratio
 
-# CUDA GPU 加速（需要 NVIDIA GPU + CUDA 环境）
+# CUDA GPU 加速 - ConsecutiveReverseStrategy（平仓-重开版本）
 python -m backtest optimize \
     --strategy strategies/consecutive_reverse.py \
     --symbol BTCUSDT --interval 1h \
     --start 2024-01-01 --end 2024-12-31 \
     --balance 1000 --leverage 50 \
     --params "CONSECUTIVE_THRESHOLD=3:8:1,POSITION_MULTIPLIER=1.0:1.5:0.1,INITIAL_POSITION_PCT=0.005:0.03:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1" \
+    --method cuda-grid --objective sharpe_ratio
+
+# CUDA GPU 加速 - ConsecutiveReverseMartingaleStrategy（Martingale加仓版本）
+python -m backtest optimize \
+    --strategy strategies/consecutive_reverse_martingale.py \
+    --symbol BTCUSDT --interval 1h \
+    --start 2024-01-01 --end 2024-12-31 \
+    --balance 1000 --leverage 50 \
+    --params "CONSECUTIVE_THRESHOLD=2:8:1,POSITION_MULTIPLIER=0.6:2.0:0.05,INITIAL_POSITION_PCT=0.005:0.03:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1" \
     --method cuda-grid --objective sharpe_ratio
 
 # CUDA 自动寻优（使用策略内置 OPTIMIZE_SPACE + 两阶段细化）
@@ -346,7 +357,11 @@ A: CUDA 驱动未正确安装。运行 `nvidia-smi` 确认驱动正常。
 
 **Q: `No CUDA kernel registered for 'XxxStrategy'`**
 
-A: 当前仅 ConsecutiveReverseStrategy 有 CUDA 实现。其他策略请使用 `--method numba-grid` 或 `--method grid`。
+A: 当前有两个策略支持 CUDA 加速：
+- `ConsecutiveReverseStrategy`（平仓-重开版本）→ 使用 `consecutive_reverse_close_reopen_kernel`
+- `ConsecutiveReverseMartingaleStrategy`（Martingale加仓版本）→ 使用 `consecutive_reverse_kernel`
+
+其他策略请使用 `--method numba-grid` 或 `--method grid`。
 
 **Q: 显存不足 (Out of Memory)**
 
@@ -429,6 +444,37 @@ class Position:
     unrealized_pnl: float # 未实现盈亏
     margin: float        # 占用保证金
 ```
+
+### ConsecutiveReverse 策略两个变体对比
+
+项目提供了两个预构建的 ConsecutiveReverse 策略变体，演示不同的风险管理方式：
+
+| 特性 | ConsecutiveReverseStrategy | ConsecutiveReverseMartingaleStrategy |
+|-----|--------------------------|----------------------------------|
+| 文件 | `strategies/consecutive_reverse.py` | `strategies/consecutive_reverse_martingale.py` |
+| 策略类名 | `ConsecutiveReverseStrategy` | `ConsecutiveReverseMartingaleStrategy` |
+| **亏损K线处理** | **立即平仓 + 重新开仓** | **加仓至目标仓位** |
+| 风格 | 快速止损，及时换向 | Martingale加仓，摊低成本 |
+| 适用市场 | 震荡/反转频繁 | 单边趋势较强 |
+| 风险 | 交易频繁，手续费较高 | 亏损时加仓，风险暴露更大 |
+| CUDA Kernel | `consecutive_reverse_close_reopen_kernel` | `consecutive_reverse_kernel` |
+
+**核心区别示例**（以连涨后做空为例）：
+
+```
+Scenario: 连续5根阳线，做空头寸，第6根出现亏损K线（阳线）
+
+ConsecutiveReverseStrategy (close+reopen):
+  1. 平掉空头仓位
+  2. 尝试重新做空
+
+ConsecutiveReverseMartingaleStrategy (martingale):
+  1. 计算目标仓位（基于连续数=6）
+  2. 补差加仓至目标仓位
+  3. 不进行平仓-重开操作
+```
+
+两个策略参数完全相同，均支持 CPU / Numba / CUDA 加速优化。
 
 ### 示例：均线交叉策略
 

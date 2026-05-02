@@ -42,6 +42,18 @@ def cmd_collect(args: argparse.Namespace) -> None:
     print("Done.")
 
 
+def _collect_strategy_params(strategy_class: type) -> dict:
+    """Snapshot UPPER_CASE class attributes (the strategy's tunable parameters)."""
+    params: dict = {}
+    for name in dir(strategy_class):
+        if not name.isupper() or name.startswith("_"):
+            continue
+        value = getattr(strategy_class, name, None)
+        if isinstance(value, (int, float, str, bool)):
+            params[name] = value
+    return params
+
+
 def _apply_extra_params(strategy_class: type, extra_args: list[str]) -> None:
     it = iter(extra_args)
     for token in it:
@@ -98,11 +110,18 @@ def cmd_run(args: argparse.Namespace, extra_args: list[str] | None = None) -> No
         maintenance_margin=config.get("maintenance_margin", 0.005),
         start=f"{args.start} 00:00:00" if args.start else None,
         end=f"{args.end} 23:59:59" if args.end else None,
+        margin_mode=args.margin_mode or config.get("margin_mode", "isolated"),
     )
 
     print(f"Running backtest: {strategy_class.__name__} on {args.symbol} {args.interval} ...")
     result = engine.run()
     report = Reporter.generate(result)
+
+    report["strategy_params"] = _collect_strategy_params(strategy_class)
+    report["run_leverage"] = engine.leverage
+    report["run_balance"] = engine.balance
+    report["run_start"] = args.start
+    report["run_end"] = args.end
 
     import json, sqlite3
     report_db = str(Path(db_path).parent / "reports.db")
@@ -176,6 +195,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             objective=args.objective,
             n_trials=args.n_trials,
             n_jobs=args.n_jobs or 1,
+            margin_mode=args.margin_mode,
         )
     elif args.method == "numba-grid":
         optimizer = NumbaGridOptimizer(
@@ -236,6 +256,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             param_space=param_space,
             objective=args.objective,
             n_jobs=args.n_jobs,
+            margin_mode=args.margin_mode,
         )
 
     result = optimizer.run()
@@ -274,6 +295,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         end_date=args.end,
         result=result,
         top_n=save_n,
+        leverage=args.leverage,
     )
     saved = save_n if save_n else result.total_trials
     print(f"\nResults saved to database ({min(saved, result.total_trials)} rows).")
@@ -319,6 +341,8 @@ def main() -> None:
     p_run.add_argument("--balance", type=float, default=None)
     p_run.add_argument("--leverage", type=int, default=None,
                        help="Exchange leverage (for margin & liquidation)")
+    p_run.add_argument("--margin-mode", choices=["isolated", "cross"], default=None, dest="margin_mode",
+                       help="Margin mode (isolated=per-position, cross=account-wide)")
     p_run.add_argument("--sizing-leverage", type=int, default=None, dest="sizing_leverage",
                        help="Strategy sizing leverage (sets LEVERAGE class attr, used in _calc_quantity)")
     p_run.add_argument("--db", default=None)
@@ -336,6 +360,8 @@ def main() -> None:
     p_opt.add_argument("--end", required=True, help="YYYY-MM-DD")
     p_opt.add_argument("--balance", type=float, default=10000.0)
     p_opt.add_argument("--leverage", type=int, default=10)
+    p_opt.add_argument("--margin-mode", choices=["isolated", "cross"], default="isolated", dest="margin_mode",
+                       help="Margin mode (isolated=per-position, cross=account-wide)")
     p_opt.add_argument("--params", default=None, help="e.g. X=1:10:2,Y=a|b|c; omit to use strategy OPTIMIZE_SPACE")
     p_opt.add_argument("--objective", default="sharpe_ratio",
                        choices=["sharpe_ratio", "net_return", "sortino_ratio", "profit_factor", "win_rate"])

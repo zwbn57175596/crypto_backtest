@@ -197,6 +197,7 @@ def _run_single_trial(args: dict) -> dict:
         leverage=args["leverage"],
         start=args["start"],
         end=args["end"],
+        margin_mode=args.get("margin_mode", "isolated"),
     )
 
     result = engine.run()
@@ -255,6 +256,7 @@ class GridSearchOptimizer:
         param_space: ParamSpace | None = None,
         objective: str = "sharpe_ratio",
         n_jobs: int | None = None,
+        margin_mode: str = "isolated",
     ):
         self.db_path = db_path
         self.strategy_path = strategy_path
@@ -268,6 +270,7 @@ class GridSearchOptimizer:
         self.param_space = param_space or ParamSpace({})
         self.objective = objective
         self.n_jobs = n_jobs or os.cpu_count() or 1
+        self.margin_mode = margin_mode
 
     def run(self) -> OptimizeResult:
         """Run grid search over all parameter combinations."""
@@ -286,6 +289,7 @@ class GridSearchOptimizer:
                 "end": self.end,
                 "balance": self.balance,
                 "leverage": self.leverage,
+                "margin_mode": self.margin_mode,
                 "params": params,
                 "objective": self.objective,
             }
@@ -343,6 +347,7 @@ class OptunaOptimizer:
         objective: str = "sharpe_ratio",
         n_trials: int = 100,
         n_jobs: int = 1,
+        margin_mode: str = "isolated",
     ):
         try:
             import optuna  # noqa: F401
@@ -365,6 +370,7 @@ class OptunaOptimizer:
         self.objective = objective
         self.n_trials = n_trials
         self.n_jobs = n_jobs
+        self.margin_mode = margin_mode
 
     def _suggest_params(self, trial) -> dict:
         """Map ParamSpace to Optuna trial suggestions."""
@@ -404,6 +410,7 @@ class OptunaOptimizer:
                 "end": self.end,
                 "balance": self.balance,
                 "leverage": self.leverage,
+                "margin_mode": self.margin_mode,
                 "params": params,
                 "objective": self.objective,
             }
@@ -429,12 +436,14 @@ class OptunaOptimizer:
 
 def _numba_worker(args: tuple) -> dict:
     """Worker function for NumbaGridOptimizer multiprocessing."""
-    from backtest.numba_simulate import simulate
+    from backtest.numba_simulate import simulate_martingale, simulate_close_reopen
 
     bars, params, sizing_leverage, exchange_leverage, commission_rate, \
-        funding_rate, maintenance_margin, initial_balance, objective = args
+        funding_rate, maintenance_margin, initial_balance, objective, is_martingale = args
 
-    result = simulate(
+    simulate_fn = simulate_martingale if is_martingale else simulate_close_reopen
+
+    result = simulate_fn(
         bars,
         threshold=int(params.get("CONSECUTIVE_THRESHOLD", 5)),
         multiplier=float(params.get("POSITION_MULTIPLIER", 1.1)),
@@ -480,12 +489,14 @@ _shared_bars = None
 def _numba_worker_shared(args: tuple) -> dict:
     """Worker using module-level shared bars to avoid pickling large arrays."""
     global _shared_bars
-    from backtest.numba_simulate import simulate
+    from backtest.numba_simulate import simulate_martingale, simulate_close_reopen
 
     params, sizing_leverage, exchange_leverage, commission_rate, \
-        funding_rate, maintenance_margin, initial_balance, objective = args
+        funding_rate, maintenance_margin, initial_balance, objective, is_martingale = args
 
-    result = simulate(
+    simulate_fn = simulate_martingale if is_martingale else simulate_close_reopen
+
+    result = simulate_fn(
         _shared_bars,
         threshold=int(params.get("CONSECUTIVE_THRESHOLD", 5)),
         multiplier=float(params.get("POSITION_MULTIPLIER", 1.1)),
@@ -568,7 +579,12 @@ class NumbaGridOptimizer:
     def run(self) -> OptimizeResult:
         """Run grid search with Numba-accelerated simulation."""
         from datetime import datetime, timezone
-        from backtest.numba_simulate import load_bars, simulate
+        from backtest.numba_simulate import load_bars, simulate_martingale, simulate_close_reopen
+
+        # Detect strategy type (Martingale variant vs close+reopen)
+        strategy_class = _load_strategy_class(self.strategy_path)
+        is_martingale = "Martingale" in strategy_class.__name__
+        simulate_fn = simulate_martingale if is_martingale else simulate_close_reopen
 
         # Pre-load bars once
         start_ts = int(
@@ -583,7 +599,7 @@ class NumbaGridOptimizer:
         print(f"Loaded {bars.shape[0]} bars, warming up JIT...", flush=True)
 
         # Warm up JIT compilation
-        simulate(bars[:10], 5, 1.1, 0.01, 1, 50, 50, 0.0004, 0.0001, 0.005, 1000.0)
+        simulate_fn(bars[:10], 5, 1.1, 0.01, 1, 50, 50, 0.0004, 0.0001, 0.005, 1000.0)
 
         combos = self.param_space.grid()
         total = len(combos)
@@ -604,7 +620,7 @@ class NumbaGridOptimizer:
             results = []
             for i, params in enumerate(combos, 1):
                 sizing_lev = int(params.get("LEVERAGE", default_params.get("LEVERAGE", self.leverage)))
-                result = simulate(
+                result = simulate_fn(
                     bars,
                     threshold=int(params.get("CONSECUTIVE_THRESHOLD", default_params.get("CONSECUTIVE_THRESHOLD", 5))),
                     multiplier=float(params.get("POSITION_MULTIPLIER", default_params.get("POSITION_MULTIPLIER", 1.1))),
@@ -641,6 +657,7 @@ class NumbaGridOptimizer:
                     self.maintenance_margin,
                     self.balance,
                     self.objective,
+                    is_martingale,
                 )
                 for params in combos
             ]
@@ -687,6 +704,7 @@ def save_results(
     end_date: str,
     result: OptimizeResult,
     top_n: int | None = 1000,
+    leverage: int | None = None,
 ) -> None:
     """Save top N optimization trials to SQLite (default: top 1000)."""
     from datetime import datetime, timezone
@@ -705,13 +723,21 @@ def save_results(
             params_json TEXT NOT NULL,
             report_json TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            batch_id TEXT
+            batch_id TEXT,
+            leverage REAL
         )
     """)
 
     # Idempotent migration — add batch_id column if not present
     try:
         conn.execute("ALTER TABLE optimize_results ADD COLUMN batch_id TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+    # Idempotent migration — add leverage column if not present
+    try:
+        conn.execute("ALTER TABLE optimize_results ADD COLUMN leverage REAL")
         conn.commit()
     except sqlite3.OperationalError:
         pass  # column already exists
@@ -737,14 +763,15 @@ def save_results(
             json.dumps(trial.get("report", {}), sort_keys=True),
             now,
             batch_id,
+            leverage,
         )
         for trial in trials
     ]
 
     conn.executemany(
         "INSERT INTO optimize_results "
-        "(strategy, symbol, interval, start_date, end_date, objective, score, params_json, report_json, created_at, batch_id) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "(strategy, symbol, interval, start_date, end_date, objective, score, params_json, report_json, created_at, batch_id, leverage) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         rows,
     )
     conn.commit()

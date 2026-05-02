@@ -10,7 +10,7 @@ class BacktestEngine:
         strategy_class: type[BaseStrategy], balance: float = 10000.0,
         leverage: int = 10, commission_rate: float = 0.0004,
         funding_rate: float = 0.0001, maintenance_margin: float = 0.005,
-        start: str | None = None, end: str | None = None,
+        start: str | None = None, end: str | None = None, margin_mode: str = "isolated",
     ):
         self.db_path = db_path
         self.symbol = symbol
@@ -22,6 +22,7 @@ class BacktestEngine:
         self.commission_rate = commission_rate
         self.funding_rate = funding_rate
         self.maintenance_margin = maintenance_margin
+        self.margin_mode = margin_mode
         self.start_ts = self._parse_time(start) if start else None
         self.end_ts = self._parse_time(end) if end else None
 
@@ -34,7 +35,7 @@ class BacktestEngine:
         sim_exchange = SimExchange(
             balance=self.balance, leverage=self.leverage,
             commission_rate=self.commission_rate, funding_rate=self.funding_rate,
-            maintenance_margin=self.maintenance_margin,
+            maintenance_margin=self.maintenance_margin, margin_mode=self.margin_mode,
         )
         strategy = self.strategy_class(exchange=sim_exchange, symbol=self.symbol)
         strategy.on_init()

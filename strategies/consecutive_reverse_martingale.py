@@ -1,33 +1,38 @@
 """
-Consecutive Reverse Martingale Strategy - 连续K线反转 + 马丁加仓策略
+Consecutive Reverse Martingale Strategy - 连续K线反转策略（Martingale加仓版本）
 
-基于连续同向K线后反向开仓的均值回归策略（马丁加仓版本）。
+基于连续同向K线后反向开仓的均值回归策略。
 当连续N根同向K线出现时，认为趋势过度延伸，反向建仓。
-亏损K线时按目标仓位补差加仓（马丁策略），盈利K线达到阈值后平仓。
 
-与 ConsecutiveReverseStrategy（close+reopen 版本）的区别:
-  - 亏损K线: 此版本不平仓，只补差加仓 (martingale)
-  - 盈利K线: 与原版相同，达到阈值后平仓
+核心逻辑：
+  - 盈利K线：当K线方向与持仓方向一致时，计数加1。达到阈值后平仓，重新开仓
+  - 亏损K线：当K线方向与持仓方向相反时，不平仓，只补差加仓至目标仓位（Martingale策略）
+  - 与 ConsecutiveReverseStrategy 的区别：
+    此版本在亏损时采用"补差加仓"策略，不进行平仓-重开操作
 
-杠杆说明（两个独立参数）:
-  --leverage        交易所杠杆，决定保证金比例和强平线（margin = qty / leverage）
-  --sizing-leverage 策略仓位杠杆（对应 LEVERAGE 类属性），决定开仓名义价值
-                    首笔名义值 = balance × INITIAL_POSITION_PCT × LEVERAGE(sizing)
-                    必须确保 首笔名义值 / exchange_leverage <= balance
+与 CUDA 对应关系：
+  - CPU:  ConsecutiveReverseMartingaleStrategy
+  - CUDA: consecutive_reverse_kernel
 
 运行方式（示例参数，以优化器最优为准）:
     python -m backtest run --strategy strategies/consecutive_reverse_martingale.py \
         --symbol BTCUSDT --interval 1h \
         --start 2020-01-01 --end 2026-03-30 \
         --balance 1000 --leverage 50 \
-        --sizing-leverage 21 \
-        --initial_position_pct 0.07 \
         --consecutive_threshold 7 \
         --position_multiplier 2.6 \
+        --initial_position_pct 0.07 \
         --profit_candle_threshold 2
 
+参数优化 (CPU):
+    python -m backtest optimize --strategy strategies/consecutive_reverse_martingale.py \
+        --symbol BTCUSDT --interval 1h \
+        --start 2020-01-01 --end 2026-03-30 \
+        --balance 1000 --leverage 50 \
+        --params "CONSECUTIVE_THRESHOLD=2:8:1,POSITION_MULTIPLIER=0.6:2.0:0.05,INITIAL_POSITION_PCT=0.005:0.03:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1" \
+        --method grid --objective sharpe_ratio
 
-参数优化:
+参数优化 (GPU 加速):
     python -m backtest optimize --strategy strategies/consecutive_reverse_martingale.py \
         --symbol BTCUSDT --interval 1h \
         --start 2020-01-01 --end 2026-03-30 \
@@ -39,7 +44,7 @@ Consecutive Reverse Martingale Strategy - 连续K线反转 + 马丁加仓策略
     python -m backtest optimize --strategy strategies/consecutive_reverse_martingale.py \
         --symbol BTCUSDT --interval 1h \
         --start 2020-01-01 --end 2025-12-31 \
-        --balance 1000 \
+        --balance 1000 --leverage 50 \
         --method cuda-auto --objective sharpe_ratio
 """
 

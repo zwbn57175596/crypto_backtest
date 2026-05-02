@@ -10,6 +10,28 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+### Token-Efficient Tooling (RTK)
+
+A global Claude Code `PreToolUse` hook (`rtk hook claude`) auto-rewrites Bash
+commands to `rtk <cmd>` for compact output (e.g. `pytest tests/` →
+`rtk pytest tests/`, `git status` → `rtk git status`). This is transparent and
+saves 60–90% of tokens on dev operations.
+
+**Auto-rewritten** (no action needed): `pytest`, `git`, `gh`, `grep`, `find`,
+`ls`, `tree`, `wc`, `diff`, `curl`, `docker`, `npm`, `cargo`, etc.
+
+**NOT auto-rewritten** — invoke `rtk` explicitly when output is large:
+- `rtk read PATH` — filtered file read for large reports / optimization output
+- `rtk summary <cmd>` — heuristic 2-line summary of any command
+- `rtk err <cmd>` — show only errors / warnings from a command
+
+Project commands (`python -m backtest run/optimize/collect/web`) are not
+wrapped by rtk; their CLI output is already compact.
+
+Meta: `rtk gain` shows current session savings, `rtk --version` verifies install
+(>= 0.38.0 expected). If rtk is not installed, the hook is a no-op — commands
+run unwrapped without errors, so contributors without rtk are unaffected.
+
 ### Common Commands
 ```bash
 # Run all tests
@@ -199,7 +221,7 @@ tests/
 
 ## Data Models
 
-All are Python dataclasses in `/Users/zhaowei/GitHub/crypto_backtest/src/backtest/models.py`:
+All are Python dataclasses in `src/backtest/models.py`:
 
 ### Bar (OHLCV)
 ```python
