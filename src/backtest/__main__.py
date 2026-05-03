@@ -319,6 +319,35 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     print(f"Top {args.report_top} results saved as reports. View with: python -m backtest web")
 
 
+def cmd_live(args: argparse.Namespace) -> None:
+    import os
+    from backtest.live_engine import LiveEngine
+
+    api_key = os.environ.get("BINANCE_API_KEY", "")
+    secret = os.environ.get("BINANCE_SECRET", "")
+    if not api_key or not secret:
+        print("Error: BINANCE_API_KEY and BINANCE_SECRET environment variables must be set.")
+        sys.exit(1)
+
+    strategy_class = _load_strategy(args.strategy)
+    if args.extra_params:
+        _apply_extra_params(strategy_class, args.extra_params)
+
+    engine = LiveEngine(
+        strategy_class=strategy_class,
+        symbol=args.symbol,
+        interval=args.interval,
+        leverage=args.leverage,
+        commission_rate=args.commission_rate,
+        api_key=api_key,
+        secret=secret,
+        testnet=not args.no_testnet,
+        dry_run=args.dry_run,
+        state_dir=args.state_dir,
+    )
+    engine.run()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="backtest", description="Crypto futures backtester")
     sub = parser.add_subparsers(dest="command")
@@ -373,6 +402,20 @@ def main() -> None:
     p_opt.add_argument("--report-top", type=int, default=3, help="Save top N full reports (with equity curve)")
     p_opt.add_argument("--db", default=None)
 
+    p_live = sub.add_parser("live", help="Run strategy in live trading mode")
+    p_live.add_argument("--strategy", required=True, help="Path to strategy .py file")
+    p_live.add_argument("--symbol", required=True)
+    p_live.add_argument("--interval", required=True)
+    p_live.add_argument("--leverage", type=int, required=True)
+    p_live.add_argument("--commission-rate", type=float, default=0.0004, dest="commission_rate")
+    p_live.add_argument("--no-testnet", action="store_true", default=False,
+                        help="Use mainnet (default is testnet)")
+    p_live.add_argument("--dry-run", action="store_true", default=False,
+                        help="Log orders without sending them")
+    p_live.add_argument("--state-dir", default="live_state", dest="state_dir")
+    p_live.add_argument("extra_params", nargs=argparse.REMAINDER,
+                        help="Extra strategy params e.g. --CONSECUTIVE_THRESHOLD 5")
+
     args, extra = parser.parse_known_args()
     if args.command == "collect":
         cmd_collect(args)
@@ -382,6 +425,8 @@ def main() -> None:
         cmd_web(args)
     elif args.command == "optimize":
         cmd_optimize(args)
+    elif args.command == "live":
+        cmd_live(args)
     else:
         parser.print_help()
 
