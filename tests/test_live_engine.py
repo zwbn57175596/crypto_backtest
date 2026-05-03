@@ -1,5 +1,6 @@
 from strategies.consecutive_reverse import ConsecutiveReverseStrategy
 from unittest.mock import MagicMock
+from backtest.strategy import BaseStrategy
 
 
 def _make_exchange():
@@ -127,3 +128,58 @@ class TestLiveEngineStatePersistenceIntegration:
 
         assert strategy._consecutive_count == 6
         assert strategy._streak_direction == -1
+        assert strategy._profit_candle_count == 0
+
+
+class FixedStrategy(BaseStrategy):
+    """Minimal strategy for testing — save_state returns a fixed dict."""
+    def on_bar(self, bar):
+        pass
+
+    def save_state(self) -> dict:
+        return {"count": 42}
+
+
+class TestLiveEngineProcessBar:
+    def test_process_bar_skips_on_sync_failure(self, capsys):
+        from backtest.live_exchange import LiveExchange
+        from backtest.live_engine import LiveEngine
+        from backtest.models import Bar
+
+        # sync() will fail because balance raises
+        client = _make_live_client()
+        client.balance.side_effect = Exception("Network timeout")
+
+        ex = LiveExchange(client, "BTCUSDT", leverage=10, commission_rate=0.0004)
+        strategy = FixedStrategy(exchange=ex, symbol="BTCUSDT")
+        strategy.on_init()
+
+        engine = LiveEngine(FixedStrategy, "BTCUSDT", "1h", leverage=10)
+        bar = Bar("BTCUSDT", 1_700_000_000_000, 50000, 51000, 49000, 50500, 100.0, "1h")
+
+        # Must not raise — exception is caught and logged
+        engine._process_bar(bar, strategy, ex)
+
+        captured = capsys.readouterr()
+        assert "ERROR" in captured.err
+
+    def test_process_bar_saves_state_on_success(self, tmp_path):
+        from backtest.live_exchange import LiveExchange
+        from backtest.live_engine import LiveEngine
+        from backtest.models import Bar
+
+        client = _make_live_client()
+        ex = LiveExchange(client, "BTCUSDT", leverage=10, commission_rate=0.0004)
+        ex.sync()
+
+        strategy = FixedStrategy(exchange=ex, symbol="BTCUSDT")
+        strategy.on_init()
+
+        engine = LiveEngine(FixedStrategy, "BTCUSDT", "1h", leverage=10, state_dir=str(tmp_path))
+        bar = Bar("BTCUSDT", 1_700_000_000_000, 50000, 51000, 49000, 50500, 100.0, "1h")
+
+        engine._process_bar(bar, strategy, ex)
+
+        state_file = tmp_path / "BTCUSDT_1h.json"
+        assert state_file.exists()
+        assert json.loads(state_file.read_text()) == {"count": 42}

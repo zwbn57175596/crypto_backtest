@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from backtest.live_exchange import LiveExchange
 from backtest.live_feed import LiveFeed
+from backtest.models import Bar
 from backtest.strategy import BaseStrategy
 
 try:
@@ -84,15 +85,21 @@ class LiveEngine:
         except KeyboardInterrupt:
             self._on_exit(live_exchange)
 
-    def _process_bar(self, bar, strategy: BaseStrategy, live_exchange: LiveExchange) -> None:
+    def _process_bar(self, bar: Bar, strategy: BaseStrategy, live_exchange: LiveExchange) -> None:
         ts = datetime.fromtimestamp(bar.timestamp / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
-        live_exchange.sync()
-        strategy._push_bar(bar)
-        live_exchange.wait_fills(timeout=30.0)
-        self._save_state(strategy)
-        pos = live_exchange.get_position(self.symbol)
-        pos_str = f"{pos.side} {pos.quantity:.2f}@{pos.entry_price:.2f}" if pos else "flat"
-        print(f"[{ts}] balance={live_exchange.balance:.2f} equity={live_exchange.equity:.2f} pos={pos_str}")
+        try:
+            live_exchange.sync()
+            strategy._push_bar(bar)
+            live_exchange.wait_fills(timeout=30.0)
+            self._save_state(strategy)
+            pos = live_exchange.get_position(self.symbol)
+            pos_str = f"{pos.side} {pos.quantity:.2f}@{pos.entry_price:.2f}" if pos else "flat"
+            print(f"[{ts}] balance={live_exchange.balance:.2f} equity={live_exchange.equity:.2f} pos={pos_str}")
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            self._alert(f"[ERROR] bar {ts}: {e}")
+            traceback.print_exc(file=sys.stderr)
 
     def _save_state(self, strategy: BaseStrategy) -> None:
         state = strategy.save_state()
