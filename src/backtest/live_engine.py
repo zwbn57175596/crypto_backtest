@@ -1,5 +1,4 @@
 # src/backtest/live_engine.py
-import hashlib
 import json
 import signal
 import sqlite3
@@ -16,12 +15,6 @@ from backtest.live_feed import LiveFeed
 from backtest.live_history import LiveHistoryDB
 from backtest.models import Bar
 from backtest.strategy import BaseStrategy
-
-
-def _account_id(api_key: str) -> str:
-    if not api_key:
-        return "dry_run"
-    return hashlib.sha256(api_key.encode()).hexdigest()[:16]
 
 
 class _StateDB:
@@ -181,7 +174,7 @@ class LiveEngine:
         self._history_db.upsert_trades(self._account_id, exchange, trades)
 
     def _sync_loop(self) -> None:
-        while self._stop_sync is not None and not self._stop_sync.wait(self._sync_interval):
+        while not self._stop_sync.wait(self._sync_interval):
             try:
                 self._do_sync()
             except Exception as e:
