@@ -110,13 +110,15 @@ class LiveEngine:
             print(f"[INFO] Restored state: account={self._account_id} "
                   f"{strategy_name}/{self.symbol}/{self.interval}")
 
-        self._do_sync()
+        if not self.dry_run:
+            self._do_sync()
 
         self._print_startup_summary(live_exchange)
 
-        self._stop_sync = threading.Event()
-        sync_thread = threading.Thread(target=self._sync_loop, daemon=True)
-        sync_thread.start()
+        if not self.dry_run:
+            self._stop_sync = threading.Event()
+            sync_thread = threading.Thread(target=self._sync_loop, daemon=True)
+            sync_thread.start()
 
         def _handle_sigterm(_sig, _frame):
             self._on_exit(live_exchange)
