@@ -1,6 +1,8 @@
+# src/backtest/live_feed.py
 import time
 from collections.abc import Iterator
 
+from backtest.live_connector import BaseExchangeConnector
 from backtest.models import Bar
 
 _INTERVAL_SECONDS: dict[str, int] = {
@@ -36,9 +38,9 @@ def _kline_to_bar(symbol: str, interval: str, k: list) -> Bar:
 
 
 class LiveFeed:
-    def __init__(self, client, symbol: str, interval: str,
+    def __init__(self, connector: BaseExchangeConnector, symbol: str, interval: str,
                  close_buffer_sec: float = 5.0):
-        self._client = client
+        self._connector = connector
         self._symbol = symbol
         self._interval = interval
         self._interval_sec = _interval_to_seconds(interval)
@@ -53,7 +55,7 @@ class LiveFeed:
             if sleep_until > now:
                 time.sleep(sleep_until - now)
 
-            klines = self._client.klines(
+            klines = self._connector.klines(
                 symbol=self._symbol,
                 interval=self._interval,
                 limit=2,
@@ -72,7 +74,7 @@ class LiveFeed:
             yield closed_bar
 
     def _backfill(self, from_ts: int, to_ts: int) -> Iterator[Bar]:
-        klines = self._client.klines(
+        klines = self._connector.klines(
             symbol=self._symbol,
             interval=self._interval,
             startTime=from_ts,
