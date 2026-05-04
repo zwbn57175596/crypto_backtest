@@ -2,6 +2,13 @@
 import time
 from abc import ABC, abstractmethod
 
+
+def _nonzero_float(s: str | None) -> float | None:
+    if s is None:
+        return None
+    v = float(s)
+    return v if v > 0 else None
+
 try:
     from binance.um_futures import UMFutures
 except ImportError:
@@ -130,20 +137,22 @@ class BinanceConnector(BaseExchangeConnector):
 
     def fetch_orders(self, symbol: str, since_ms: int | None = None) -> list[dict]:
         kwargs: dict = {"symbol": symbol}
-        if since_ms:
+        if since_ms is not None:
             kwargs["startTime"] = since_ms
         raw = _retry(lambda: self._client.get_all_orders(**kwargs))
         return [self._normalize_order(o) for o in raw]
 
     def fetch_trades(self, symbol: str, since_ms: int | None = None) -> list[dict]:
         kwargs: dict = {"symbol": symbol}
-        if since_ms:
+        if since_ms is not None:
             kwargs["startTime"] = since_ms
         raw = _retry(lambda: self._client.get_account_trades(**kwargs))
         return [self._normalize_trade(t) for t in raw]
 
     def submit_order(self, symbol: str, side: str, type_: str,
                      quantity: float, price: float | None = None) -> dict:
+        if type_ == "limit" and price is None:
+            raise ValueError("price is required for limit orders")
         params: dict = {
             "symbol": symbol,
             "side": side.upper(),
@@ -164,7 +173,6 @@ class BinanceConnector(BaseExchangeConnector):
 
     @staticmethod
     def _normalize_order(o: dict) -> dict:
-        avg = float(o.get("avgPrice", 0))
         status = o["status"].lower()
         return {
             "order_id": str(o["orderId"]),
@@ -172,11 +180,11 @@ class BinanceConnector(BaseExchangeConnector):
             "side": o["side"].lower(),
             "type": "market" if o["type"] == "MARKET" else "limit",
             "quantity": float(o["origQty"]),
-            "price": float(o["price"]) if float(o["price"]) > 0 else None,
+            "price": _nonzero_float(o.get("price", "0")),
             "status": status,
-            "filled_price": avg if avg > 0 else None,
+            "filled_price": _nonzero_float(o.get("avgPrice", "0")),
             "filled_qty": float(o["executedQty"]),
-            "commission": None,
+            "commission": None,  # commission not available at order level; see fetch_trades
             "ts": int(o["time"]),
             "filled_at": int(o["updateTime"]) if status == "filled" else None,
         }
