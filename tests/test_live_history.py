@@ -133,3 +133,12 @@ def test_latest_ts_returns_max(db):
 def test_latest_ts_invalid_table_raises(db):
     with pytest.raises(ValueError):
         db.latest_ts("acc1", "binance", "BTCUSDT", "evil_table; DROP TABLE orders--")
+
+
+def test_record_position_appends_multiple_rows(db):
+    from backtest.models import Position
+    pos = Position("BTCUSDT", "long", 5000.0, 50000.0, 10, 200.0, 500.0)
+    db.record_position("acc1", "binance", "BTCUSDT", pos, 1000.0, 1700.0, 1000)
+    db.record_position("acc1", "binance", "BTCUSDT", pos, 1050.0, 1750.0, 2000)
+    conn = sqlite3.connect(db._db_path)
+    assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 2

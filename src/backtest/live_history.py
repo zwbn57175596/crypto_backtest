@@ -142,7 +142,7 @@ class LiveHistoryDB:
     def latest_ts(self, account_id: str, exchange: str, symbol: str, table: str) -> int:
         if table not in {"orders", "trades", "positions", "state_snapshots"}:
             raise ValueError(f"Invalid table: {table!r}")
-        with sqlite3.connect(self._db_path) as conn:
+        with self._lock, sqlite3.connect(self._db_path) as conn:
             row = conn.execute(
                 f"SELECT MAX(ts) FROM {table} WHERE account_id=? AND exchange=? AND symbol=?",
                 (account_id, exchange, symbol),
