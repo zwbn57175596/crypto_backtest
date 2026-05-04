@@ -319,31 +319,70 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     print(f"Top {args.report_top} results saved as reports. View with: python -m backtest web")
 
 
-def cmd_live(args: argparse.Namespace) -> None:
-    import os
-    from backtest.live_engine import LiveEngine
+def _load_env_file(path: str) -> dict[str, str]:
+    """Parse a .env file (KEY=VALUE lines). Ignores comments and blank lines."""
+    env: dict[str, str] = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            env[key.strip()] = val.strip().strip('"').strip("'")
+    return env
 
-    api_key = os.environ.get("BINANCE_API_KEY", "")
-    secret = os.environ.get("BINANCE_SECRET", "")
-    if not api_key or not secret:
-        print("Error: BINANCE_API_KEY and BINANCE_SECRET environment variables must be set.")
+
+def cmd_live(args: argparse.Namespace) -> None:
+    import hashlib
+    import os
+    from backtest.live_connector import BinanceConnector
+    from backtest.live_engine import LiveEngine
+    from backtest.live_history import LiveHistoryDB
+
+    if args.env_file:
+        try:
+            env = _load_env_file(args.env_file)
+        except FileNotFoundError:
+            print(f"Error: env file not found: {args.env_file}")
+            sys.exit(1)
+        api_key = env.get("BINANCE_API_KEY", "")
+        secret = env.get("BINANCE_SECRET", "")
+    else:
+        api_key = os.environ.get("BINANCE_API_KEY", "")
+        secret = os.environ.get("BINANCE_SECRET", "")
+
+    if (not api_key or not secret) and not args.dry_run:
+        print(
+            "Error: BINANCE_API_KEY and BINANCE_SECRET must be set via environment variables "
+            "or --env-file. (Not required for --dry-run)"
+        )
         sys.exit(1)
 
     strategy_class = _load_strategy(args.strategy)
     if args.extra_params:
         _apply_extra_params(strategy_class, args.extra_params)
 
+    if args.exchange == "binance":
+        connector = BinanceConnector(api_key=api_key, secret=secret, testnet=not args.no_testnet)
+    else:
+        print(f"Error: unsupported exchange: {args.exchange}")
+        sys.exit(1)
+
+    account_id = hashlib.sha256(api_key.encode()).hexdigest()[:16] if api_key else "dry_run"
+    history_db = LiveHistoryDB(args.history_db)
+
     engine = LiveEngine(
         strategy_class=strategy_class,
         symbol=args.symbol,
         interval=args.interval,
         leverage=args.leverage,
+        connector=connector,
+        history_db=history_db,
+        account_id=account_id,
         commission_rate=args.commission_rate,
-        api_key=api_key,
-        secret=secret,
-        testnet=not args.no_testnet,
         dry_run=args.dry_run,
-        state_dir=args.state_dir,
+        state_db=args.state_db,
+        sync_interval=args.sync_interval,
     )
     engine.run()
 
@@ -407,12 +446,21 @@ def main() -> None:
     p_live.add_argument("--symbol", required=True)
     p_live.add_argument("--interval", required=True)
     p_live.add_argument("--leverage", type=int, required=True)
+    p_live.add_argument("--exchange", default="binance", choices=["binance"],
+                        help="Exchange connector (default: binance)")
     p_live.add_argument("--commission-rate", type=float, default=0.0004, dest="commission_rate")
     p_live.add_argument("--no-testnet", action="store_true", default=False,
                         help="Use mainnet (default is testnet)")
     p_live.add_argument("--dry-run", action="store_true", default=False,
-                        help="Log orders without sending them")
-    p_live.add_argument("--state-dir", default="live_state", dest="state_dir")
+                        help="Log orders without sending them (no API key required)")
+    p_live.add_argument("--state-db", default="data/live_state.db", dest="state_db",
+                        help="SQLite path for strategy state (default: data/live_state.db)")
+    p_live.add_argument("--history-db", default="data/live_history.db", dest="history_db",
+                        help="SQLite path for trading history (default: data/live_history.db)")
+    p_live.add_argument("--sync-interval", type=int, default=300, dest="sync_interval",
+                        help="Seconds between background exchange syncs (default: 300)")
+    p_live.add_argument("--env-file", default=None, dest="env_file",
+                        help="Path to .env file containing BINANCE_API_KEY and BINANCE_SECRET")
     p_live.add_argument("extra_params", nargs=argparse.REMAINDER,
                         help="Extra strategy params e.g. --CONSECUTIVE_THRESHOLD 5")
 
