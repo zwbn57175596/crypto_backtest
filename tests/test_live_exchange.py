@@ -144,6 +144,11 @@ class TestLiveExchangeSubmitOrder:
         ex.submit_order("BTCUSDT", "sell", "market", 500.0)
         assert connector.submit_order.call_args[0][1] == "sell"
 
+    def test_dry_run_skips_lot_step_api_call(self):
+        connector = _make_connector()
+        ex = _make_ex(connector=connector, dry_run=True)
+        connector.exchange_info.assert_not_called()
+
 
 class TestLiveExchangeWaitFills:
     def test_clears_pending_when_filled(self):

@@ -27,6 +27,8 @@ class LiveExchange:
         self._fetch_lot_step()
 
     def _fetch_lot_step(self) -> None:
+        if self._dry_run:
+            return  # use default 0.001
         info = self._connector.exchange_info(self._symbol)
         for f in info.get("filters", []):
             if f["filterType"] == "LOT_SIZE":
