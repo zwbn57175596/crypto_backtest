@@ -1,185 +1,138 @@
-from strategies.consecutive_reverse import ConsecutiveReverseStrategy
-from unittest.mock import MagicMock
-from backtest.strategy import BaseStrategy
-
-
-def _make_exchange():
-    ex = MagicMock()
-    ex.balance = 1000.0
-    ex.equity = 1000.0
-    ex.get_position.return_value = None
-    return ex
-
-
-class TestStrategyStateHooks:
-    def test_base_strategy_save_state_returns_empty(self):
-        from backtest.strategy import BaseStrategy
-        strategy = BaseStrategy(exchange=_make_exchange(), symbol="BTCUSDT")
-        assert strategy.save_state() == {}
-
-    def test_base_strategy_load_state_does_nothing(self):
-        from backtest.strategy import BaseStrategy
-        strategy = BaseStrategy(exchange=_make_exchange(), symbol="BTCUSDT")
-        strategy.load_state({"anything": 42})  # must not raise
-
-    def test_consecutive_reverse_save_state(self):
-        strategy = ConsecutiveReverseStrategy(exchange=_make_exchange(), symbol="BTCUSDT")
-        strategy.on_init()
-        strategy._consecutive_count = 5
-        strategy._streak_direction = -1
-        strategy._profit_candle_count = 2
-        state = strategy.save_state()
-        assert state == {
-            "consecutive_count": 5,
-            "streak_direction": -1,
-            "profit_candle_count": 2,
-        }
-
-    def test_consecutive_reverse_load_state(self):
-        strategy = ConsecutiveReverseStrategy(exchange=_make_exchange(), symbol="BTCUSDT")
-        strategy.on_init()
-        strategy.load_state({"consecutive_count": 7, "streak_direction": 1, "profit_candle_count": 3})
-        assert strategy._consecutive_count == 7
-        assert strategy._streak_direction == 1
-        assert strategy._profit_candle_count == 3
-
-    def test_consecutive_reverse_load_state_missing_keys(self):
-        strategy = ConsecutiveReverseStrategy(exchange=_make_exchange(), symbol="BTCUSDT")
-        strategy.on_init()
-        strategy.load_state({})  # empty state → all defaults
-        assert strategy._consecutive_count == 0
-        assert strategy._streak_direction == 0
-        assert strategy._profit_candle_count == 0
-
-
+# tests/test_live_engine.py
 import json
-import os
+import tempfile
+from unittest.mock import MagicMock, patch
+
+from backtest.strategy import BaseStrategy
+from backtest.models import Bar
 
 
-def _make_live_client(balance="1000", position_amt="0"):
-    from unittest.mock import MagicMock
-    client = MagicMock()
-    client.exchange_info.return_value = {"symbols": [{"symbol": "BTCUSDT", "filters": [
-        {"filterType": "LOT_SIZE", "stepSize": "0.001"}
-    ]}]}
-    client.balance.return_value = [{"asset": "USDT", "availableBalance": balance, "balance": balance}]
-    client.get_position_risk.return_value = [{
-        "positionAmt": position_amt, "entryPrice": "0", "unrealizedProfit": "0"
-    }]
-    client.mark_price.return_value = {"markPrice": "50000"}
-    return client
+def _make_connector(balance=1000.0, position=None, mark_price=50000.0):
+    connector = MagicMock()
+    connector.exchange_name = "binance"
+    connector.exchange_info.return_value = {
+        "symbol": "BTCUSDT",
+        "filters": [{"filterType": "LOT_SIZE", "stepSize": "0.001"}],
+    }
+    connector.fetch_balance.return_value = balance
+    connector.fetch_position.return_value = position
+    connector.fetch_mark_price.return_value = mark_price
+    connector.fetch_orders.return_value = []
+    connector.fetch_trades.return_value = []
+    return connector
 
 
-class TestLiveEngineStatePersistenceIntegration:
-    def test_save_state_writes_json_file(self, tmp_path):
-        from backtest.live_exchange import LiveExchange
+def _make_history_db():
+    return MagicMock()
+
+
+def _make_bar(ts: int = 1_700_000_000_000) -> Bar:
+    return Bar("BTCUSDT", ts, 50000.0, 51000.0, 49000.0, 50500.0, 100.0, "1h")
+
+
+class _NoOpStrategy(BaseStrategy):
+    def on_bar(self, bar): pass
+
+
+class TestProcessBar:
+    def _make_engine(self, connector=None, history_db=None):
         from backtest.live_engine import LiveEngine
-        from strategies.consecutive_reverse import ConsecutiveReverseStrategy
-
-        client = _make_live_client()
-        ex = LiveExchange(client, "BTCUSDT", leverage=10, commission_rate=0.0004)
-        ex.sync()
-
-        strategy = ConsecutiveReverseStrategy(exchange=ex, symbol="BTCUSDT")
-        strategy.on_init()
-        strategy._consecutive_count = 4
-        strategy._streak_direction = 1
-        strategy._profit_candle_count = 1
-
+        from backtest.live_exchange import LiveExchange
+        conn = connector or _make_connector()
+        hdb = history_db or _make_history_db()
+        # Use mkdtemp so the directory persists beyond the helper's scope.
+        tmp = tempfile.mkdtemp()
         engine = LiveEngine(
-            ConsecutiveReverseStrategy, "BTCUSDT", "1h",
-            leverage=10, state_dir=str(tmp_path)
+            strategy_class=_NoOpStrategy,
+            symbol="BTCUSDT",
+            interval="1h",
+            leverage=10,
+            connector=conn,
+            history_db=hdb,
+            account_id="testacc",
+            dry_run=True,
+            state_db=f"{tmp}/state.db",
         )
-        engine._save_state(strategy)
-
-        state_file = tmp_path / "BTCUSDT_1h.json"
-        assert state_file.exists()
-        saved = json.loads(state_file.read_text())
-        assert saved["consecutive_count"] == 4
-        assert saved["streak_direction"] == 1
-        assert saved["profit_candle_count"] == 1
-
-    def test_load_state_restores_strategy_on_restart(self, tmp_path):
-        from backtest.live_exchange import LiveExchange
-        from backtest.live_engine import LiveEngine
-        from strategies.consecutive_reverse import ConsecutiveReverseStrategy
-
-        state_file = tmp_path / "BTCUSDT_4h.json"
-        state_file.write_text(json.dumps({
-            "consecutive_count": 6,
-            "streak_direction": -1,
-            "profit_candle_count": 0,
-        }))
-
-        client = _make_live_client()
-        ex = LiveExchange(client, "BTCUSDT", leverage=10, commission_rate=0.0004)
+        ex = LiveExchange(
+            connector=conn, history_db=hdb,
+            account_id="testacc", symbol="BTCUSDT",
+            leverage=10, commission_rate=0.0004, dry_run=True,
+        )
         ex.sync()
-
-        strategy = ConsecutiveReverseStrategy(exchange=ex, symbol="BTCUSDT")
+        strategy = _NoOpStrategy(exchange=ex, symbol="BTCUSDT")
         strategy.on_init()
+        return engine, ex, strategy
 
-        engine = LiveEngine(
-            ConsecutiveReverseStrategy, "BTCUSDT", "4h",
-            leverage=10, state_dir=str(tmp_path)
-        )
-        if os.path.exists(engine._state_file):
-            with open(engine._state_file) as f:
-                strategy.load_state(json.load(f))
-
-        assert strategy._consecutive_count == 6
-        assert strategy._streak_direction == -1
-        assert strategy._profit_candle_count == 0
-
-
-class FixedStrategy(BaseStrategy):
-    """Minimal strategy for testing — save_state returns a fixed dict."""
-    def on_bar(self, bar):
-        pass
-
-    def save_state(self) -> dict:
-        return {"count": 42}
-
-
-class TestLiveEngineProcessBar:
-    def test_process_bar_skips_on_sync_failure(self, capsys):
-        from backtest.live_exchange import LiveExchange
-        from backtest.live_engine import LiveEngine
-        from backtest.models import Bar
-
-        # sync() will fail because balance raises
-        client = _make_live_client()
-        client.balance.side_effect = Exception("Network timeout")
-
-        ex = LiveExchange(client, "BTCUSDT", leverage=10, commission_rate=0.0004)
-        strategy = FixedStrategy(exchange=ex, symbol="BTCUSDT")
-        strategy.on_init()
-
-        engine = LiveEngine(FixedStrategy, "BTCUSDT", "1h", leverage=10)
-        bar = Bar("BTCUSDT", 1_700_000_000_000, 50000, 51000, 49000, 50500, 100.0, "1h")
-
-        # Must not raise — exception is caught and logged
-        engine._process_bar(bar, strategy, ex)
-
+    def test_process_bar_prints_status(self, capsys):
+        engine, ex, strategy = self._make_engine()
+        engine._process_bar(_make_bar(), strategy, ex)
         captured = capsys.readouterr()
-        assert "ERROR" in captured.err
+        assert "balance=" in captured.out
 
-    def test_process_bar_saves_state_on_success(self, tmp_path):
-        from backtest.live_exchange import LiveExchange
+    def test_process_bar_saves_state(self):
+        engine, ex, strategy = self._make_engine()
+        engine._process_bar(_make_bar(), strategy, ex)
+        engine._history_db.record_state_snapshot.assert_called_once()
+
+    def test_process_bar_exception_does_not_propagate(self):
+        engine, ex, strategy = self._make_engine()
+        strategy._push_bar = MagicMock(side_effect=RuntimeError("boom"))
+        engine._process_bar(_make_bar(), strategy, ex)  # must not raise
+
+
+class TestDoSync:
+    def test_do_sync_fetches_orders_and_trades(self):
         from backtest.live_engine import LiveEngine
-        from backtest.models import Bar
+        connector = _make_connector()
+        history_db = _make_history_db()
+        history_db.latest_ts.return_value = 0
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = LiveEngine(
+                strategy_class=_NoOpStrategy, symbol="BTCUSDT", interval="1h",
+                leverage=10, connector=connector, history_db=history_db,
+                account_id="testacc", state_db=f"{tmp}/state.db",
+            )
+            engine._do_sync()
+        connector.fetch_orders.assert_called_once_with("BTCUSDT", since_ms=None)
+        connector.fetch_trades.assert_called_once_with("BTCUSDT", since_ms=None)
 
-        client = _make_live_client()
-        ex = LiveExchange(client, "BTCUSDT", leverage=10, commission_rate=0.0004)
-        ex.sync()
+    def test_do_sync_uses_latest_ts_as_since(self):
+        from backtest.live_engine import LiveEngine
+        connector = _make_connector()
+        history_db = _make_history_db()
+        history_db.latest_ts.side_effect = lambda acc, ex, sym, table: (
+            1_700_000_000_000 if table == "orders" else 1_699_000_000_000
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = LiveEngine(
+                strategy_class=_NoOpStrategy, symbol="BTCUSDT", interval="1h",
+                leverage=10, connector=connector, history_db=history_db,
+                account_id="testacc", state_db=f"{tmp}/state.db",
+            )
+            engine._do_sync()
+        connector.fetch_orders.assert_called_once_with("BTCUSDT", since_ms=1_700_000_000_000)
+        connector.fetch_trades.assert_called_once_with("BTCUSDT", since_ms=1_699_000_000_000)
 
-        strategy = FixedStrategy(exchange=ex, symbol="BTCUSDT")
-        strategy.on_init()
 
-        engine = LiveEngine(FixedStrategy, "BTCUSDT", "1h", leverage=10, state_dir=str(tmp_path))
-        bar = Bar("BTCUSDT", 1_700_000_000_000, 50000, 51000, 49000, 50500, 100.0, "1h")
+class TestStateDB:
+    def test_save_and_load_roundtrip(self):
+        from backtest.live_engine import _StateDB
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _StateDB(f"{tmp}/state.db")
+            db.save("acc1", "MyStrat", "BTCUSDT", "1h", {"count": 42})
+            result = db.load("acc1", "MyStrat", "BTCUSDT", "1h")
+            assert result == {"count": 42}
 
-        engine._process_bar(bar, strategy, ex)
+    def test_load_returns_none_when_missing(self):
+        from backtest.live_engine import _StateDB
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _StateDB(f"{tmp}/state.db")
+            assert db.load("acc1", "MyStrat", "BTCUSDT", "1h") is None
 
-        state_file = tmp_path / "BTCUSDT_1h.json"
-        assert state_file.exists()
-        assert json.loads(state_file.read_text()) == {"count": 42}
+    def test_save_overwrites_previous(self):
+        from backtest.live_engine import _StateDB
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _StateDB(f"{tmp}/state.db")
+            db.save("acc1", "MyStrat", "BTCUSDT", "1h", {"v": 1})
+            db.save("acc1", "MyStrat", "BTCUSDT", "1h", {"v": 2})
+            assert db.load("acc1", "MyStrat", "BTCUSDT", "1h") == {"v": 2}
