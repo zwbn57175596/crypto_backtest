@@ -123,6 +123,18 @@ class ConsecutiveReverseStrategy(BaseStrategy):
             return True
         return False
 
+    def save_state(self) -> dict:
+        return {
+            "consecutive_count": self._consecutive_count,
+            "streak_direction": self._streak_direction,
+            "profit_candle_count": self._profit_candle_count,
+        }
+
+    def load_state(self, state: dict) -> None:
+        self._consecutive_count = state.get("consecutive_count", 0)
+        self._streak_direction = state.get("streak_direction", 0)
+        self._profit_candle_count = state.get("profit_candle_count", 0)
+
     # ==================== 预留方法（未激活）====================
 
     def _add_position(self, direction: int) -> None:

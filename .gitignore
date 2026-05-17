@@ -11,6 +11,7 @@ build/
 data/*.db
 data/*.log
 data/*.pid
+data/*.key
 
 .claude/
 .superpowers/

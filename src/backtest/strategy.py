@@ -51,3 +51,9 @@ class BaseStrategy:
 
     def history(self, n: int) -> list[Bar]:
         return self._bar_history[-n:]
+
+    def save_state(self) -> dict:
+        return {}
+
+    def load_state(self, state: dict) -> None:
+        pass

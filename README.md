@@ -31,6 +31,9 @@ crypto_backtest/
 │   │   ├── binance.py            # 币安 K 线采集
 │   │   ├── okx.py                # OKX K 线采集
 │   │   └── htx.py                # HTX K 线采集
+│   ├── live_engine.py            # LiveEngine 实盘事件循环
+│   ├── live_exchange.py          # LiveExchange 实盘交易所适配器
+│   ├── live_feed.py              # LiveFeed 实盘 K 线推送
 │   ├── numba_simulate.py         # Numba JIT CPU 加速模拟
 │   ├── cuda_exchange.py          # CUDA GPU 交易所 device 函数
 │   ├── cuda_runner.py            # CUDA GPU 网格搜索优化器
@@ -157,6 +160,168 @@ Web 报告展示：
 - **回撤曲线** — 回撤深度和恢复过程
 - **交易明细** — 每笔交易的方向、价格、数量、盈亏
 - **P&L 分析** — 按交易统计盈利/亏损分布
+
+## 实盘交易
+
+### 前置条件
+
+**1. 安装 SDK**
+
+```bash
+pip install -e .
+# 实盘依赖 binance-futures-connector
+pip install binance-futures-connector
+```
+
+**2. 创建币安 API Key**
+
+- 登录币安 → 账户设置 → API 管理 → 创建 API Key
+- 权限需勾选：**合约交易**（Futures Trading）
+- 建议先在**测试网**调试，测试网地址：https://testnet.binancefuture.com
+
+**3. 配置 API Key**
+
+方式一：环境变量（单用户单进程，写入 `~/.bashrc` 永久生效）
+
+```bash
+export BINANCE_API_KEY="你的API Key"
+export BINANCE_SECRET="你的Secret Key"
+```
+
+方式二：`.env` 文件（多进程/多用户隔离，推荐）
+
+```bash
+# 创建 .env 文件，权限设为仅自己可读
+cat > ~/.binance.env << 'EOF'
+BINANCE_API_KEY=你的API Key
+BINANCE_SECRET=你的Secret Key
+EOF
+chmod 600 ~/.binance.env
+```
+
+### 启动实盘
+
+```bash
+# 测试网运行（默认，安全调试）
+python -m backtest live \
+    --strategy strategies/example_ma_cross.py \
+    --symbol BTCUSDT \
+    --interval 1h \
+    --leverage 10 \
+    --env-file ~/.binance.env
+
+# 正式主网运行（--no-testnet 切换主网，涉及真实资金！）
+python -m backtest live \
+    --strategy strategies/example_ma_cross.py \
+    --symbol BTCUSDT \
+    --interval 1h \
+    --leverage 10 \
+    --no-testnet
+
+# 干跑模式：打印订单日志但不实际下单，不需要 API Key
+python -m backtest live \
+    --strategy strategies/example_ma_cross.py \
+    --symbol BTCUSDT \
+    --interval 1h \
+    --leverage 10 \
+    --dry-run
+
+# 传入策略参数（覆盖策略默认值）
+python -m backtest live \
+    --strategy strategies/consecutive_reverse.py \
+    --symbol BTCUSDT \
+    --interval 1h \
+    --leverage 50 \
+    --CONSECUTIVE_THRESHOLD 5 \
+    --INITIAL_POSITION_PCT 0.01
+```
+
+### live 参数说明
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| --strategy | 策略文件路径（必需） | - |
+| --symbol | 交易对（必需） | - |
+| --interval | K线周期（必需） | - |
+| --leverage | 杠杆倍数（必需） | - |
+| --commission-rate | 手续费率 | 0.0004 |
+| --no-testnet | 切换为主网（默认测试网） | 关闭 |
+| --dry-run | 干跑：仅打印不下单 | 关闭 |
+| --state-db | 状态数据库路径 | data/live_state.db |
+| --env-file | .env 文件路径（含 API Key/Secret） | 读环境变量 |
+
+### 状态持久化
+
+引擎每根 K 线后自动将策略内部状态保存到 `data/live_state.db`（SQLite），进程重启后按账号自动恢复。状态以 `(account_id, strategy, symbol, interval)` 为主键隔离，不同账号互不影响。
+
+**查看所有账号的状态记录：**
+
+```bash
+sqlite3 data/live_state.db \
+    "SELECT account_id, strategy, symbol, interval, updated_at FROM live_state"
+```
+
+`account_id` 是 API Key 的 SHA256 前16位（不存明文）。启动日志也会打印当前 Account ID 方便核对：
+
+```
+=== LiveEngine TESTNET ===
+Strategy: ShadowPowerStrategy  Symbol: BTCUSDT  Interval: 15m  Leverage: 49x
+Account ID: 4f122308952fe175
+```
+
+退出时若有持仓，会询问是否平仓：
+
+```
+=== Stopping LiveEngine ===
+Open position: long 1000.00 USDT @ 63500.00
+Close position before exit? [y/N]
+```
+
+### 多人/多实例部署
+
+**API Key 与账户绑定**：每对 `BINANCE_API_KEY` / `BINANCE_SECRET` 只能访问**一个**币安账户的资金。同一台服务器多人实盘，每人使用自己账户的独立 API Key。
+
+**多 Linux 用户（推荐）**：各自在 `~/.bashrc` 或 `~/.zshrc` 里设置 API Key，从各自 home 目录启动，环境和状态目录自然隔离，互不干扰：
+
+```bash
+# 用户A：编辑 ~/.bashrc
+export BINANCE_API_KEY="A的Key"
+export BINANCE_SECRET="A的Secret"
+
+# 用户B：编辑 ~/.bashrc
+export BINANCE_API_KEY="B的Key"
+export BINANCE_SECRET="B的Secret"
+```
+
+各自 `source ~/.bashrc` 后，直接启动即可，`live_state/` 默认在各自的工作目录下，不会冲突。
+
+**同一 Linux 用户跑多进程**：每人维护自己的 `.env` 文件，状态由 `account_id` 自动隔离，共用同一个数据库即可：
+
+```bash
+# 进程1 — 用户A的账户
+python -m backtest live --strategy s.py --symbol BTCUSDT --interval 1h \
+    --leverage 10 --env-file /path/to/userA.env
+
+# 进程2 — 用户B的账户
+python -m backtest live --strategy s.py --symbol ETHUSDT --interval 1h \
+    --leverage 10 --env-file /path/to/userB.env
+```
+
+`.env` 文件格式：
+
+```
+BINANCE_API_KEY=xxxxxxxxxxxx
+BINANCE_SECRET=xxxxxxxxxxxx
+```
+
+建议权限设为 `chmod 600`，防止同机其他用户读取。
+
+**后台持续运行**，建议用 `screen` / `tmux`，或 `nohup`：
+
+```bash
+nohup python -m backtest live --strategy s.py --symbol BTCUSDT --interval 1h --leverage 10 \
+    > live.log 2>&1 &
+```
 
 ## 参数优化
 

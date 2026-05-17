@@ -11,7 +11,7 @@ Shadow Power Build 策略 - 基于项目回测框架的实现
         --balance 1000 --leverage 49
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from backtest.strategy import BaseStrategy
 from backtest.models import Bar
 
@@ -434,3 +434,27 @@ class ShadowPowerStrategy(BaseStrategy):
                 factor = (1 + self.BASE_FOR_POWER) ** self.ROUNDED_E
 
         return round(base * factor, 2)
+
+    # ==================== 状态持久化 ====================
+
+    def save_state(self) -> dict:
+        return {
+            "15m_buffer": [asdict(b) for b in self._15m_buffer],
+            "bars_4h": [asdict(b) for b in self._bars_4h],
+            "last_4h_close_time": self._last_4h_close_time,
+            "tb_list": self._tb_list,
+            "fp_list": self._fp_list,
+            "sl_tp_list": self._sl_tp_list,
+            "first_bar_ts": self._first_bar_ts,
+            "last_build_check_ts": self._last_build_check_ts,
+        }
+
+    def load_state(self, state: dict) -> None:
+        self._15m_buffer = [Bar(**d) for d in state.get("15m_buffer", [])]
+        self._bars_4h = [Bar4H(**d) for d in state.get("bars_4h", [])]
+        self._last_4h_close_time = state.get("last_4h_close_time", 0)
+        self._tb_list = state.get("tb_list", [])
+        self._fp_list = state.get("fp_list", [])
+        self._sl_tp_list = state.get("sl_tp_list", [])
+        self._first_bar_ts = state.get("first_bar_ts", 0)
+        self._last_build_check_ts = state.get("last_build_check_ts", 0)
