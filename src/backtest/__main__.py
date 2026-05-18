@@ -297,6 +297,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         result=result,
         top_n=save_n,
         leverage=args.leverage,
+        strategy_path=args.strategy,
+        exchange=args.exchange,
     )
     saved = save_n if save_n else result.total_trials
     print(f"\nResults saved to database ({min(saved, result.total_trials)} rows).")

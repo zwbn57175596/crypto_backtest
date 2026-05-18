@@ -614,3 +614,38 @@ class TestBatchId:
 
         assert rows[0][0] is not None
         assert "MaCross" in rows[0][0]
+
+
+class TestSaveResultsColumns:
+    def test_strategy_path_and_exchange_saved(self, tmp_path):
+        import json, sqlite3
+        from backtest.optimizer import save_results, OptimizeResult
+        db = str(tmp_path / "test.db")
+        result = OptimizeResult(
+            best_params={"SIZE_LEVERAGE": 10},
+            best_score=0.5,
+            all_trials=[{
+                "params": {"SIZE_LEVERAGE": 10},
+                "score": 0.5,
+                "report": {"net_return": 0.1, "sharpe_ratio": 0.5,
+                           "max_drawdown": 0.2, "win_rate": 0.5,
+                           "profit_factor": 1.2, "total_trades": 10,
+                           "annual_return": 0.15, "sortino_ratio": 0.4},
+            }],
+            objective="sharpe_ratio",
+            total_trials=1,
+            elapsed_seconds=1.0,
+        )
+        save_results(
+            db_path=db, strategy="TestStrat", symbol="BTCUSDT", interval="1h",
+            start_date="2024-01-01", end_date="2024-03-01", result=result,
+            leverage=50, strategy_path="strategies/consecutive_reverse.py",
+            exchange="okx",
+        )
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT strategy_path, exchange FROM optimize_results WHERE id=1"
+        ).fetchone()
+        conn.close()
+        assert row[0] == "strategies/consecutive_reverse.py"
+        assert row[1] == "okx"
