@@ -26,6 +26,52 @@ def _parse_date_to_ms(date_str: str) -> int:
     return int(dt.timestamp() * 1000)
 
 
+def _load_optimize_result(optimize_id: int, db_arg: str | None) -> dict:
+    """Load run parameters from optimize_results table by id."""
+    import json, sqlite3
+    from pathlib import Path
+    report_db = db_arg or str(Path("data") / "reports.db")
+    conn = sqlite3.connect(report_db)
+    row = conn.execute(
+        "SELECT strategy_path, symbol, interval, start_date, end_date, "
+        "leverage, exchange, params_json "
+        "FROM optimize_results WHERE id = ?",
+        (optimize_id,),
+    ).fetchone()
+    conn.close()
+    if row is None:
+        sys.exit(f"optimize_results id={optimize_id} not found in {report_db}")
+    strategy_path, symbol, interval, start_date, end_date, leverage, exchange, params_json = row
+    return {
+        "strategy_path": strategy_path,
+        "symbol": symbol,
+        "interval": interval,
+        "start": start_date,
+        "end": end_date,
+        "leverage": int(leverage) if leverage is not None else None,
+        "exchange": exchange or "binance",
+        "params": json.loads(params_json),
+    }
+
+
+def _apply_optimize_params(strategy_class: type, params: dict) -> None:
+    """Apply params dict from optimize_results to strategy class attributes."""
+    for key, value in params.items():
+        attr = key
+        # backward compat: old DB records use "LEVERAGE"; new strategies use "SIZE_LEVERAGE"
+        if key == "LEVERAGE" and not hasattr(strategy_class, "LEVERAGE") \
+                and hasattr(strategy_class, "SIZE_LEVERAGE"):
+            attr = "SIZE_LEVERAGE"
+        if not hasattr(strategy_class, attr):
+            continue
+        try:
+            setattr(strategy_class, attr, type(getattr(strategy_class, attr))(value))
+            print(f"  [param] {attr} = {value}")
+        except (TypeError, ValueError):
+            setattr(strategy_class, attr, value)
+            print(f"  [param] {attr} = {value}")
+
+
 def cmd_collect(args: argparse.Namespace) -> None:
     from backtest.collector import COLLECTORS
     collector_cls = COLLECTORS.get(args.exchange)

@@ -452,6 +452,93 @@ class TestTopNAutoSave:
         assert "trades" in report
 
 
+class TestLoadOptimizeResult:
+    def test_loads_all_fields(self, tmp_path):
+        import json, sqlite3
+        from backtest.optimizer import save_results, OptimizeResult
+        db = str(tmp_path / "r.db")
+        result = OptimizeResult(
+            best_params={"SIZE_LEVERAGE": 26},
+            best_score=0.88,
+            all_trials=[{
+                "params": {"SIZE_LEVERAGE": 26, "CONSECUTIVE_THRESHOLD": 8},
+                "score": 0.88,
+                "report": {"net_return": 1.0, "sharpe_ratio": 0.88,
+                           "max_drawdown": 0.5, "win_rate": 0.5,
+                           "profit_factor": 1.5, "total_trades": 100,
+                           "annual_return": 0.5, "sortino_ratio": 0.7},
+            }],
+            objective="sharpe_ratio", total_trials=1, elapsed_seconds=1.0,
+        )
+        save_results(
+            db_path=db, strategy="ConsecutiveReverseStrategy",
+            symbol="BTCUSDT", interval="1h",
+            start_date="2020-01-01", end_date="2026-03-30",
+            result=result, leverage=50,
+            strategy_path="strategies/consecutive_reverse.py", exchange="okx",
+        )
+        import sys
+        sys.path.insert(0, "src")
+        from backtest.__main__ import _load_optimize_result
+        loaded = _load_optimize_result(1, db)
+        assert loaded["strategy_path"] == "strategies/consecutive_reverse.py"
+        assert loaded["symbol"] == "BTCUSDT"
+        assert loaded["interval"] == "1h"
+        assert loaded["start"] == "2020-01-01"
+        assert loaded["end"] == "2026-03-30"
+        assert loaded["leverage"] == 50
+        assert loaded["exchange"] == "okx"
+        assert loaded["params"]["SIZE_LEVERAGE"] == 26
+
+    def test_not_found_raises(self, tmp_path):
+        import sqlite3
+        from backtest.__main__ import _load_optimize_result
+        db = str(tmp_path / "empty.db")
+        conn = sqlite3.connect(db)
+        conn.execute("""CREATE TABLE optimize_results (
+            id INTEGER PRIMARY KEY, strategy_path TEXT, symbol TEXT,
+            interval TEXT, start_date TEXT, end_date TEXT,
+            leverage REAL, exchange TEXT, params_json TEXT)""")
+        conn.commit()
+        conn.close()
+        with pytest.raises(SystemExit):
+            _load_optimize_result(999, db)
+
+
+class TestApplyOptimizeParams:
+    def test_sets_known_attrs(self):
+        from backtest.__main__ import _apply_optimize_params
+        from strategies.consecutive_reverse import ConsecutiveReverseStrategy
+
+        class TrialClass(ConsecutiveReverseStrategy):
+            pass
+
+        _apply_optimize_params(TrialClass, {"SIZE_LEVERAGE": 26, "CONSECUTIVE_THRESHOLD": 8})
+        assert TrialClass.SIZE_LEVERAGE == 26
+        assert TrialClass.CONSECUTIVE_THRESHOLD == 8
+
+    def test_legacy_leverage_key_maps_to_size_leverage(self):
+        from backtest.__main__ import _apply_optimize_params
+        from strategies.consecutive_reverse import ConsecutiveReverseStrategy
+
+        class TrialClass(ConsecutiveReverseStrategy):
+            pass
+
+        # Old DB record with "LEVERAGE" key — should map to SIZE_LEVERAGE
+        _apply_optimize_params(TrialClass, {"LEVERAGE": 26})
+        assert TrialClass.SIZE_LEVERAGE == 26
+
+    def test_ignores_unknown_attrs(self):
+        from backtest.__main__ import _apply_optimize_params
+        from strategies.consecutive_reverse import ConsecutiveReverseStrategy
+
+        class TrialClass(ConsecutiveReverseStrategy):
+            pass
+
+        # Should not raise even with unknown key
+        _apply_optimize_params(TrialClass, {"UNKNOWN_PARAM": 99})
+
+
 def test_save_top_reports_links_optimize_result_id(tmp_path):
     """reports.optimize_result_id must point to the matching optimize_results row."""
     import json, sqlite3
