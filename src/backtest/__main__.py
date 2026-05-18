@@ -32,10 +32,19 @@ def _load_optimize_result(optimize_id: int, db_arg: str | None) -> dict:
     from pathlib import Path
     report_db = db_arg or str(Path("data") / "reports.db")
     conn = sqlite3.connect(report_db)
+    # Detect which optional columns exist (strategy_path/exchange added in Task 4;
+    # older DBs may not have them yet).
+    existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(optimize_results)")}
+    has_strategy_path = "strategy_path" in existing_cols
+    has_exchange = "exchange" in existing_cols
+    select_cols = (
+        ("strategy_path, " if has_strategy_path else "NULL, ")
+        + "symbol, interval, start_date, end_date, leverage, "
+        + ("exchange, " if has_exchange else "NULL, ")
+        + "params_json"
+    )
     row = conn.execute(
-        "SELECT strategy_path, symbol, interval, start_date, end_date, "
-        "leverage, exchange, params_json "
-        "FROM optimize_results WHERE id = ?",
+        f"SELECT {select_cols} FROM optimize_results WHERE id = ?",
         (optimize_id,),
     ).fetchone()
     conn.close()
@@ -138,7 +147,34 @@ def cmd_run(args: argparse.Namespace, extra_args: list[str] | None = None) -> No
         with open(config_path) as f:
             config = yaml.safe_load(f).get("backtest", {})
 
+    optimize_params: dict | None = None
+    if args.optimize_id is not None:
+        opt = _load_optimize_result(args.optimize_id, args.db)
+        if opt["strategy_path"] is None and args.strategy is None:
+            sys.exit(
+                f"optimize_results id={args.optimize_id} has no strategy_path; "
+                "pass --strategy to specify the file"
+            )
+        args.strategy  = args.strategy  or opt["strategy_path"]
+        args.symbol    = args.symbol    or opt["symbol"]
+        args.interval  = args.interval  or opt["interval"]
+        args.start     = args.start     or opt["start"]
+        args.end       = args.end       or opt["end"]
+        args.leverage  = args.leverage  or opt["leverage"]
+        args.exchange  = args.exchange  or opt["exchange"]
+        optimize_params = opt["params"]
+
+    # Validate required args (may have been filled by --optimize-id)
+    if not args.strategy:
+        sys.exit("--strategy is required (or use --optimize-id)")
+    if not args.symbol:
+        sys.exit("--symbol is required (or use --optimize-id)")
+    if not args.interval:
+        sys.exit("--interval is required (or use --optimize-id)")
+
     strategy_class = _load_strategy(args.strategy)
+    if optimize_params:
+        _apply_optimize_params(strategy_class, optimize_params)
     if extra_args:
         _apply_extra_params(strategy_class, extra_args)
     if args.sizing_leverage is not None:
@@ -462,10 +498,12 @@ def main() -> None:
     p_collect.add_argument("--db", default=None)
 
     p_run = sub.add_parser("run", help="Run backtest")
-    p_run.add_argument("--strategy", required=True)
-    p_run.add_argument("--symbol", required=True)
-    p_run.add_argument("--interval", required=True)
-    p_run.add_argument("--exchange", default="binance")
+    p_run.add_argument("--strategy", default=None)
+    p_run.add_argument("--symbol", default=None)
+    p_run.add_argument("--interval", default=None)
+    p_run.add_argument("--exchange", default=None)
+    p_run.add_argument("--optimize-id", type=int, default=None, dest="optimize_id",
+                       help="Load all params from optimize_results id; replaces manual param flags")
     p_run.add_argument("--start", default=None)
     p_run.add_argument("--end", default=None)
     p_run.add_argument("--balance", type=float, default=None)
