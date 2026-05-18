@@ -96,8 +96,9 @@ def cmd_run(args: argparse.Namespace, extra_args: list[str] | None = None) -> No
     if extra_args:
         _apply_extra_params(strategy_class, extra_args)
     if args.sizing_leverage is not None:
-        strategy_class.LEVERAGE = args.sizing_leverage
-        print(f"  [param] LEVERAGE (sizing) = {args.sizing_leverage}")
+        attr = "SIZE_LEVERAGE" if hasattr(strategy_class, "SIZE_LEVERAGE") else "LEVERAGE"
+        setattr(strategy_class, attr, args.sizing_leverage)
+        print(f"  [param] {attr} = {args.sizing_leverage}")
     db_path = args.db or str(Path("data") / "klines.db")
 
     engine = BacktestEngine(
@@ -371,6 +372,15 @@ def cmd_live(args: argparse.Namespace) -> None:
     account_id = hashlib.sha256(api_key.encode()).hexdigest()[:16] if api_key else "dry_run"
     history_db = LiveHistoryDB(args.history_db)
 
+    order_rate: tuple[int, int] | None = None
+    if args.order_rate:
+        try:
+            n, s = args.order_rate.split("/")
+            order_rate = (int(n), int(s))
+        except (ValueError, AttributeError):
+            print(f"Error: --order-rate must be N/S (e.g. 5/60), got: {args.order_rate!r}")
+            sys.exit(1)
+
     engine = LiveEngine(
         strategy_class=strategy_class,
         symbol=args.symbol,
@@ -383,6 +393,10 @@ def cmd_live(args: argparse.Namespace) -> None:
         dry_run=args.dry_run,
         state_db=args.state_db,
         sync_interval=args.sync_interval,
+        max_order_notional=args.max_order_notional,
+        max_daily_notional=args.max_daily_notional,
+        max_session_loss=args.max_session_loss,
+        order_rate=order_rate,
     )
     engine.run()
 
@@ -461,6 +475,14 @@ def main() -> None:
                         help="Seconds between background exchange syncs (default: 300)")
     p_live.add_argument("--env-file", default=None, dest="env_file",
                         help="Path to .env file containing BINANCE_API_KEY and BINANCE_SECRET")
+    p_live.add_argument("--max-order-notional", type=float, default=None, dest="max_order_notional",
+                        help="Max single order size in USDT (default: no limit)")
+    p_live.add_argument("--max-daily-notional", type=float, default=None, dest="max_daily_notional",
+                        help="Max total order notional per UTC day in USDT (default: no limit)")
+    p_live.add_argument("--max-session-loss", type=float, default=None, dest="max_session_loss",
+                        help="Max session loss in USDT before kill-switch (default: no limit)")
+    p_live.add_argument("--order-rate", default=None, dest="order_rate",
+                        help="Max order rate as N/S, e.g. 5/60 = max 5 orders per 60s (default: no limit)")
     p_live.add_argument("extra_params", nargs=argparse.REMAINDER,
                         help="Extra strategy params e.g. --CONSECUTIVE_THRESHOLD 5")
 
