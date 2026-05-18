@@ -1,0 +1,39 @@
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type 'deploy' to confirm"
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.confirm == 'deploy'
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            set -e
+            cd ~/crypto_backtest
+
+            echo "=== Pulling latest code ==="
+            git fetch origin
+            git reset --hard origin/feat/live-trading-adapter
+
+            echo "=== Installing dependencies ==="
+            source .venv/bin/activate
+            pip install -e . -q
+
+            echo "=== Restarting service ==="
+            systemctl --user restart trading-bot
+
+            echo "=== Service status ==="
+            systemctl --user status trading-bot --no-pager -l
