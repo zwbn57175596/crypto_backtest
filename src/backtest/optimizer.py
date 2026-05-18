@@ -611,7 +611,7 @@ class NumbaGridOptimizer:
                 "POSITION_MULTIPLIER",
                 "INITIAL_POSITION_PCT",
                 "PROFIT_CANDLE_THRESHOLD",
-                "LEVERAGE",
+                "SIZE_LEVERAGE",
             ],
         )
 
@@ -619,7 +619,7 @@ class NumbaGridOptimizer:
             # Single process - fastest for small grids
             results = []
             for i, params in enumerate(combos, 1):
-                sizing_lev = int(params.get("LEVERAGE", default_params.get("LEVERAGE", self.leverage)))
+                sizing_lev = int(params.get("SIZE_LEVERAGE", default_params.get("SIZE_LEVERAGE", self.leverage)))
                 result = simulate_fn(
                     bars,
                     threshold=int(params.get("CONSECUTIVE_THRESHOLD", default_params.get("CONSECUTIVE_THRESHOLD", 5))),
@@ -650,7 +650,7 @@ class NumbaGridOptimizer:
             trial_args = [
                 (
                     params,
-                    int(params.get("LEVERAGE", default_params.get("LEVERAGE", self.leverage))),
+                    int(params.get("SIZE_LEVERAGE", default_params.get("SIZE_LEVERAGE", self.leverage))),
                     self.leverage,
                     self.commission_rate,
                     self.funding_rate,

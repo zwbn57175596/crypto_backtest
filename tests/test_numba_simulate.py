@@ -32,7 +32,7 @@ def _run_original(start: str, end: str, **params):
         "POSITION_MULTIPLIER": params.get("multiplier", 1.1),
         "INITIAL_POSITION_PCT": params.get("initial_pct", 0.01),
         "PROFIT_CANDLE_THRESHOLD": params.get("profit_threshold", 1),
-        "LEVERAGE": params.get("leverage", 50),
+        "SIZE_LEVERAGE": params.get("size_leverage", 50),
     }
     TrialClass = type("Trial", (StratClass,), attrs)
 

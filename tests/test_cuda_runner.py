@@ -79,7 +79,7 @@ class TestCudaGridOptimizer:
                 "POSITION_MULTIPLIER": [1.1, 1.2],
                 "INITIAL_POSITION_PCT": [0.01],
                 "PROFIT_CANDLE_THRESHOLD": [1],
-                "LEVERAGE": [10],
+                "SIZE_LEVERAGE": [10],
             }
         )
 
@@ -133,7 +133,7 @@ class TestCudaGridOptimizer:
                 "POSITION_MULTIPLIER": 1.1,
                 "INITIAL_POSITION_PCT": [0.01],
                 "PROFIT_CANDLE_THRESHOLD": [1],
-                "LEVERAGE": [10],
+                "SIZE_LEVERAGE": [10],
             }
         )
 
@@ -175,7 +175,7 @@ class TestCudaGridOptimizer:
                 "POSITION_MULTIPLIER": 1.1,
                 "INITIAL_POSITION_PCT": [0.01],
                 "PROFIT_CANDLE_THRESHOLD": [1],
-                "LEVERAGE": [10],
+                "SIZE_LEVERAGE": [10],
             }
         )
 
@@ -278,7 +278,7 @@ class TestEdgeCases:
             "POSITION_MULTIPLIER": [1.0],
             "INITIAL_POSITION_PCT": [0.01],
             "PROFIT_CANDLE_THRESHOLD": [1],
-            "LEVERAGE": [50],
+            "SIZE_LEVERAGE": [50],
         })
         optimizer = CudaGridOptimizer(
             db_path=db_with_data,
@@ -304,7 +304,7 @@ class TestEdgeCases:
             "POSITION_MULTIPLIER": [1.1],
             "INITIAL_POSITION_PCT": [0.01],
             "PROFIT_CANDLE_THRESHOLD": [1],
-            "LEVERAGE": [50],
+            "SIZE_LEVERAGE": [50],
         })
         optimizer = CudaGridOptimizer(
             db_path=db_with_data,

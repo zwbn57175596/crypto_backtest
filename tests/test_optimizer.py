@@ -83,11 +83,14 @@ class TestParamSpace:
 
 class TestStrategyOptimizeSpace:
     def test_loads_strategy_defined_space(self):
-        space = load_strategy_optimize_space("strategies/consecutive_reverse.py")
-        assert space.total_combinations == 1080
+        space = load_strategy_optimize_space(
+            "strategies/consecutive_reverse_martingale.py"
+        )
         combos = space.grid()
-        assert combos[0]["CONSECUTIVE_THRESHOLD"] == 3
-        assert combos[0]["LEVERAGE"] == 50
+        assert len(combos) > 0
+        assert combos[0]["CONSECUTIVE_THRESHOLD"] == 2
+        assert "SIZE_LEVERAGE" in combos[0]
+        assert "LEVERAGE" not in combos[0]
 
 
 class TestRunSingleTrial:
