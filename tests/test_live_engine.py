@@ -1,6 +1,8 @@
 # tests/test_live_engine.py
 import json
+import logging
 import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from backtest.strategy import BaseStrategy
@@ -63,11 +65,12 @@ class TestProcessBar:
         strategy.on_init()
         return engine, ex, strategy
 
-    def test_process_bar_prints_status(self, capsys):
+    def test_process_bar_logs_status(self, caplog):
+        import logging
         engine, ex, strategy = self._make_engine()
-        engine._process_bar(_make_bar(), strategy, ex)
-        captured = capsys.readouterr()
-        assert "balance=" in captured.out
+        with caplog.at_level(logging.INFO, logger="backtest.live_engine"):
+            engine._process_bar(_make_bar(), strategy, ex)
+        assert any("balance=" in r.message for r in caplog.records)
 
     def test_process_bar_saves_state(self):
         engine, ex, strategy = self._make_engine()
@@ -136,3 +139,41 @@ class TestStateDB:
             db.save("acc1", "MyStrat", "BTCUSDT", "1h", {"v": 1})
             db.save("acc1", "MyStrat", "BTCUSDT", "1h", {"v": 2})
             assert db.load("acc1", "MyStrat", "BTCUSDT", "1h") == {"v": 2}
+
+
+class TestLogging:
+    def test_setup_logger_no_file_has_no_file_handler(self):
+        from backtest.live_engine import LiveEngine
+        log = LiveEngine._setup_logger(None)
+        handler_types = {type(h).__name__ for h in log.handlers}
+        assert "FileHandler" not in handler_types
+
+    def test_setup_logger_with_file_adds_file_handler(self, tmp_path):
+        from backtest.live_engine import LiveEngine
+        log_path = str(tmp_path / "engine.log")
+        log = LiveEngine._setup_logger(log_path)
+        handler_types = {type(h).__name__ for h in log.handlers}
+        assert "FileHandler" in handler_types
+
+    def test_log_file_written(self, tmp_path):
+        import tempfile
+        from backtest.live_engine import LiveEngine
+        log_path = str(tmp_path / "engine.log")
+        with tempfile.TemporaryDirectory() as state_tmp:
+            engine = LiveEngine(
+                strategy_class=_NoOpStrategy,
+                symbol="BTCUSDT",
+                interval="1h",
+                leverage=10,
+                connector=_make_connector(),
+                history_db=_make_history_db(),
+                account_id="testacc",
+                dry_run=True,
+                state_db=f"{state_tmp}/state.db",
+                log_file=log_path,
+            )
+        engine._log.info("test-marker")
+        for h in engine._log.handlers:
+            h.flush()
+        content = Path(log_path).read_text()
+        assert "test-marker" in content
