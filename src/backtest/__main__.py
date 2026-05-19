@@ -238,7 +238,9 @@ def cmd_web(args: argparse.Namespace) -> None:
     import uvicorn
     from backtest.web.app import create_app
     db_path = args.db or str(Path("data") / "reports.db")
-    app = create_app(db_path)
+    live_db_path = args.live_db or str(Path("data") / "live_history.db")
+    log_dir = args.log_dir or str(Path("data") / "logs")
+    app = create_app(db_path, live_db_path=live_db_path, log_dir=log_dir)
     print(f"Starting web server at http://localhost:{args.port}")
     uvicorn.run(app, host="0.0.0.0", port=args.port)
 
@@ -518,6 +520,10 @@ def main() -> None:
     p_web = sub.add_parser("web", help="Start web report viewer")
     p_web.add_argument("--port", type=int, default=8000)
     p_web.add_argument("--db", default=None)
+    p_web.add_argument("--live-db", default=None, dest="live_db",
+                       help="SQLite path for live history (default: data/live_history.db)")
+    p_web.add_argument("--log-dir", default=None, dest="log_dir",
+                       help="Directory containing live engine log files (default: data/logs)")
 
     p_opt = sub.add_parser("optimize", help="Optimize strategy parameters")
     p_opt.add_argument("--strategy", required=True)
