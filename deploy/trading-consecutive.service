@@ -1,0 +1,21 @@
+[Unit]
+Description=Crypto Trading Bot - ConsecutiveReverse BTCUSDT 1h
+After=network.target
+
+[Service]
+WorkingDirectory=/home/ubuntu/crypto_backtest
+EnvironmentFile=/home/ubuntu/.secrets/account1.env
+ExecStart=/home/ubuntu/crypto_backtest/.venv/bin/python -m backtest live \
+    --strategy strategies/consecutive_reverse.py \
+    --symbol BTCUSDT --interval 1h --leverage 50 \
+    --no-testnet \
+    --env-file /home/ubuntu/.secrets/account1.env \
+    --max-order-notional 500 --max-session-loss 300 --order-rate 10/60 \
+    --log-dir /home/ubuntu/crypto_backtest/data/logs \
+    --CONSECUTIVE_THRESHOLD 8 --POSITION_MULTIPLIER 2.7 \
+    --INITIAL_POSITION_PCT 0.13 --PROFIT_CANDLE_THRESHOLD 2 --LEVERAGE 50
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

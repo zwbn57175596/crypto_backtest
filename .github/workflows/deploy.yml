@@ -32,10 +32,11 @@ jobs:
             source .venv/bin/activate
             pip install -e . -q
 
-            echo "=== Installing web service ==="
+            echo "=== Installing service files ==="
+            cp deploy/trading-consecutive.service ~/.config/systemd/user/trading-consecutive.service
             cp deploy/trading-web.service ~/.config/systemd/user/trading-web.service
             systemctl --user daemon-reload
-            systemctl --user enable trading-web
+            systemctl --user enable trading-consecutive trading-web
 
             echo "=== Restarting services ==="
             systemctl --user restart trading-consecutive

@@ -480,6 +480,12 @@ def cmd_live(args: argparse.Namespace) -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
+    log_file = args.log_file
+    if not log_file:
+        log_dir = getattr(args, "log_dir", None) or "data/logs"
+        strategy_name = strategy_class.__name__
+        log_file = str(Path(log_dir) / f"{account_id[:8]}_{strategy_name}_{args.symbol}.log")
+
     engine = LiveEngine(
         strategy_class=strategy_class,
         symbol=args.symbol,
@@ -496,7 +502,7 @@ def cmd_live(args: argparse.Namespace) -> None:
         max_daily_notional=args.max_daily_notional,
         max_session_loss=args.max_session_loss,
         order_rate=order_rate,
-        log_file=args.log_file,
+        log_file=log_file,
     )
     engine.run()
 
@@ -589,8 +595,10 @@ def main() -> None:
                         help="Max session loss in USDT before kill-switch (default: no limit)")
     p_live.add_argument("--order-rate", default=None, dest="order_rate",
                         help="Max order rate as N/S, e.g. 5/60 = max 5 orders per 60s (default: no limit)")
+    p_live.add_argument("--log-dir", default=None, dest="log_dir",
+                        help="Directory for log files (default: data/logs); filename auto-generated as <account>_<strategy>_<symbol>.log")
     p_live.add_argument("--log-file", default=None, dest="log_file",
-                        help="Path to write live engine log (e.g. data/logs/live_BTCUSDT.log)")
+                        help="Explicit log file path; overrides --log-dir auto-naming")
     p_live.add_argument("extra_params", nargs=argparse.REMAINDER,
                         help="Extra strategy params e.g. --CONSECUTIVE_THRESHOLD 5")
 
