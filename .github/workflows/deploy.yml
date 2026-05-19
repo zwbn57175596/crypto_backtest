@@ -25,8 +25,8 @@ jobs:
             cd ~/crypto_backtest
 
             echo "=== Pulling latest code ==="
-            git fetch origin
-            git reset --hard origin/feat/live-trading-adapter
+            git fetch --tags
+            git checkout v0.1.0
 
             echo "=== Installing dependencies ==="
             source .venv/bin/activate
