@@ -467,6 +467,14 @@ def cmd_live(args: argparse.Namespace) -> None:
             print(f"Error: --order-rate must be N/S (e.g. 5/60), got: {args.order_rate!r}")
             sys.exit(1)
 
+    import logging as _logging
+    _logging.basicConfig(
+        level=_logging.INFO,
+        stream=sys.stdout,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
     engine = LiveEngine(
         strategy_class=strategy_class,
         symbol=args.symbol,
@@ -483,6 +491,7 @@ def cmd_live(args: argparse.Namespace) -> None:
         max_daily_notional=args.max_daily_notional,
         max_session_loss=args.max_session_loss,
         order_rate=order_rate,
+        log_file=args.log_file,
     )
     engine.run()
 
@@ -575,6 +584,8 @@ def main() -> None:
                         help="Max session loss in USDT before kill-switch (default: no limit)")
     p_live.add_argument("--order-rate", default=None, dest="order_rate",
                         help="Max order rate as N/S, e.g. 5/60 = max 5 orders per 60s (default: no limit)")
+    p_live.add_argument("--log-file", default=None, dest="log_file",
+                        help="Path to write live engine log (e.g. data/logs/live_BTCUSDT.log)")
     p_live.add_argument("extra_params", nargs=argparse.REMAINDER,
                         help="Extra strategy params e.g. --CONSECUTIVE_THRESHOLD 5")
 

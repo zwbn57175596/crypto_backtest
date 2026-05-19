@@ -1,5 +1,6 @@
 # src/backtest/live_engine.py
 import json
+import logging
 import signal
 import sqlite3
 import sys
@@ -72,6 +73,7 @@ class LiveEngine:
         max_daily_notional: float | None = None,
         max_session_loss: float | None = None,
         order_rate: tuple[int, int] | None = None,
+        log_file: str | None = None,
     ):
         self.strategy_class = strategy_class
         self.symbol = symbol
@@ -89,13 +91,30 @@ class LiveEngine:
         self._max_session_loss = max_session_loss
         self._order_rate = order_rate
         self._stop_sync: threading.Event | None = None
+        self._log = self._setup_logger(log_file)
+
+    @staticmethod
+    def _setup_logger(log_file: str | None) -> logging.Logger:
+        logger = logging.getLogger("backtest.live_engine")
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = True
+        logger.handlers.clear()
+        if log_file:
+            Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+            fmt = logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+            )
+            fh = logging.FileHandler(log_file, encoding="utf-8")
+            fh.setFormatter(fmt)
+            logger.addHandler(fh)
+        return logger
 
     def run(self) -> None:
         if not self.dry_run:
             try:
                 self._connector.change_leverage(self.symbol, self.leverage)
             except Exception as e:
-                print(f"[WARN] change_leverage: {e}", file=sys.stderr)
+                self._log.warning(f"change_leverage: {e}")
 
         live_exchange = LiveExchange(
             connector=self._connector,
@@ -119,8 +138,10 @@ class LiveEngine:
         saved = self._state_db.load(self._account_id, strategy_name, self.symbol, self.interval)
         if saved:
             strategy.load_state(saved)
-            print(f"[INFO] Restored state: account={self._account_id} "
-                  f"{strategy_name}/{self.symbol}/{self.interval}")
+            self._log.info(
+                f"Restored state: account={self._account_id} "
+                f"{strategy_name}/{self.symbol}/{self.interval}"
+            )
 
         if not self.dry_run:
             self._do_sync()
@@ -154,11 +175,11 @@ class LiveEngine:
             self._save_state(strategy)
             pos = live_exchange.get_position(self.symbol)
             pos_str = f"{pos.side} {pos.quantity:.2f}@{pos.entry_price:.2f}" if pos else "flat"
-            print(f"[{ts}] balance={live_exchange.balance:.2f} equity={live_exchange.equity:.2f} pos={pos_str}")
+            self._log.info(f"balance={live_exchange.balance:.2f} equity={live_exchange.equity:.2f} pos={pos_str}")
         except KeyboardInterrupt:
             raise
         except Exception as e:
-            self._alert(f"[ERROR] bar {ts}: {e}")
+            self._log.error(f"bar {ts}: {e}")
             traceback.print_exc(file=sys.stderr)
 
     def _save_state(self, strategy: BaseStrategy) -> None:
@@ -192,24 +213,32 @@ class LiveEngine:
             try:
                 self._do_sync()
             except Exception as e:
-                print(f"[WARN] background sync error: {e}", file=sys.stderr)
+                self._log.warning(f"background sync error: {e}")
 
     def _alert(self, msg: str) -> None:
-        print(msg, file=sys.stderr)
+        self._log.error(msg)
 
     def _print_startup_summary(self, live_exchange: LiveExchange) -> None:
         dry = " [DRY-RUN]" if self.dry_run else ""
-        print(f"\n=== LiveEngine{dry} ===")
-        print(f"Strategy: {self.strategy_class.__name__}  Symbol: {self.symbol}  "
-              f"Interval: {self.interval}  Leverage: {self.leverage}x")
-        print(f"Account ID: {self._account_id}  Exchange: {self._connector.exchange_name}")
-        print(f"Balance: {live_exchange.balance:.2f} USDT  Equity: {live_exchange.equity:.2f} USDT")
+        self._log.info(f"=== LiveEngine{dry} ===")
+        self._log.info(
+            f"Strategy: {self.strategy_class.__name__}  Symbol: {self.symbol}  "
+            f"Interval: {self.interval}  Leverage: {self.leverage}x"
+        )
+        self._log.info(
+            f"Account ID: {self._account_id}  Exchange: {self._connector.exchange_name}"
+        )
+        self._log.info(
+            f"Balance: {live_exchange.balance:.2f} USDT  Equity: {live_exchange.equity:.2f} USDT"
+        )
         pos = live_exchange.get_position(self.symbol)
         if pos:
-            print(f"Position: {pos.side} {pos.quantity:.2f} USDT @ {pos.entry_price:.2f}  "
-                  f"PnL: {pos.unrealized_pnl:.2f}")
+            self._log.info(
+                f"Position: {pos.side} {pos.quantity:.2f} USDT @ {pos.entry_price:.2f}  "
+                f"PnL: {pos.unrealized_pnl:.2f}"
+            )
         else:
-            print("Position: flat")
+            self._log.info("Position: flat")
         parts = []
         if self._max_order_notional is not None:
             parts.append(f"max-order={self._max_order_notional:.0f}")
@@ -219,19 +248,18 @@ class LiveEngine:
             parts.append(f"max-loss={self._max_session_loss:.0f}")
         if self._order_rate is not None:
             parts.append(f"rate={self._order_rate[0]}/{self._order_rate[1]}s")
-        if parts:
-            print(f"Risk limits: {', '.join(parts)}")
-        else:
-            print("Risk limits: none configured")
-        print()
+        risk_str = ", ".join(parts) if parts else "none configured"
+        self._log.info(f"Risk limits: {risk_str}")
 
     def _on_exit(self, live_exchange: LiveExchange) -> None:
         if self._stop_sync is not None:
             self._stop_sync.set()
         pos = live_exchange.get_position(self.symbol)
-        print("\n=== Stopping LiveEngine ===")
+        self._log.info("=== Stopping LiveEngine ===")
         if pos:
-            print(f"Open position: {pos.side} {pos.quantity:.2f} USDT @ {pos.entry_price:.2f}")
+            self._log.info(
+                f"Open position: {pos.side} {pos.quantity:.2f} USDT @ {pos.entry_price:.2f}"
+            )
             try:
                 answer = input("Close position before exit? [y/N] ")
             except EOFError:
@@ -240,6 +268,6 @@ class LiveEngine:
                 side = "sell" if pos.side == "long" else "buy"
                 live_exchange.submit_order(self.symbol, side, "market", pos.quantity)
                 live_exchange.wait_fills(timeout=30.0)
-                print("Position closed.")
+                self._log.info("Position closed.")
         else:
-            print("No open position.")
+            self._log.info("No open position.")
