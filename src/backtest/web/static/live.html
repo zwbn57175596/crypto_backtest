@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>实盘监控</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         background: #0f1117; color: #e0e0e0; }
+  .header { background: #1a1a2e; padding: 16px 24px; display: flex;
+            justify-content: space-between; align-items: center;
+            border-bottom: 1px solid #333; }
+  .header h1 { font-size: 18px; color: #00d4aa; }
+  .filter-bar { display: flex; gap: 12px; padding: 12px 24px;
+                background: #141824; border-bottom: 1px solid #1e293b;
+                align-items: center; flex-wrap: wrap; }
+  .filter-bar label { font-size: 12px; color: #888; }
+  .filter-bar select { background: #1e293b; color: #e0e0e0; border: 1px solid #333;
+                       padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+  .tab-bar { display: flex; gap: 4px; padding: 12px 24px 0;
+             border-bottom: 1px solid #1e293b; }
+  .tab-btn { padding: 8px 18px; background: none; color: #888; border: none;
+             border-bottom: 2px solid transparent; cursor: pointer; font-size: 14px;
+             transition: color 0.15s; }
+  .tab-btn.active { color: #00d4aa; border-bottom-color: #00d4aa; }
+  .tab-pane { display: none; padding: 20px 24px; }
+  .tab-pane.active { display: block; }
+  .kpi-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+             gap: 12px; margin-bottom: 16px; }
+  .kpi { background: #1e293b; border-radius: 8px; padding: 14px; }
+  .kpi .label { font-size: 11px; color: #888; letter-spacing: 0.5px; }
+  .kpi .value { font-size: 22px; font-weight: bold; margin-top: 4px; }
+  .kpi .neu-value { color: #00d4aa; }
+  .chart-box { background: #1e293b; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .chart-box h3 { font-size: 13px; color: #aaa; margin-bottom: 8px; }
+  #equityChart { height: 260px; }
+  .table-wrap { background: #1e293b; border-radius: 8px; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { padding: 10px 12px; text-align: left; color: #888; border-bottom: 1px solid #333;
+       position: sticky; top: 0; background: #1e293b; white-space: nowrap; }
+  td { padding: 9px 12px; border-bottom: 1px solid #1a1a2e; }
+  tr:last-child td { border-bottom: none; }
+  .long { color: #22c55e; }
+  .short { color: #ef4444; }
+  .pnl-pos { color: #22c55e; }
+  .pnl-neg { color: #ef4444; }
+  .badge { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 11px; }
+  .badge-filled { background: #22c55e22; color: #22c55e; }
+  .badge-pending { background: #facc1522; color: #facc15; }
+  .badge-canceled { background: #33333366; color: #888; }
+  .pagination { display: flex; gap: 8px; align-items: center; padding: 12px 0 0; }
+  .pagination button { padding: 5px 12px; background: #1e293b; color: #e0e0e0;
+                        border: 1px solid #333; border-radius: 5px; cursor: pointer; font-size: 13px; }
+  .pagination button:disabled { opacity: 0.4; cursor: default; }
+  .pagination .pg-info { font-size: 12px; color: #888; }
+  .summary-row td { color: #00d4aa; font-weight: 600; border-top: 1px solid #333; }
+  .log-controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+  .log-controls select { background: #1e293b; color: #e0e0e0; border: 1px solid #333;
+                          padding: 6px 10px; border-radius: 6px; font-size: 13px; flex: 1; min-width: 200px; }
+  .log-controls input { background: #1e293b; color: #e0e0e0; border: 1px solid #333;
+                         padding: 6px 10px; border-radius: 6px; font-size: 13px; flex: 1; min-width: 160px; }
+  .log-controls button { padding: 6px 14px; background: #1e293b; color: #00d4aa;
+                          border: 1px solid #00d4aa33; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .log-box { background: #1e293b; border-radius: 8px; padding: 12px 16px;
+             height: 480px; overflow-y: auto; font-family: 'Courier New', monospace;
+             font-size: 12px; line-height: 1.6; }
+  .log-line { border-bottom: 1px solid #1a1a2e; padding: 1px 0; }
+  .log-line.hidden { display: none; }
+  .log-line.level-warn { color: #facc15; }
+  .log-line.level-error { color: #ef4444; }
+  .pos-card { background: #1e293b; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .pos-card .pos-title { font-size: 12px; color: #888; margin-bottom: 10px; letter-spacing: 0.5px; }
+  .pos-card .pos-flat { color: #888; font-size: 14px; }
+  .pos-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; }
+  .pos-field .f-label { font-size: 11px; color: #888; }
+  .pos-field .f-value { font-size: 15px; font-weight: 600; margin-top: 2px; }
+  .empty-state { padding: 40px; text-align: center; color: #555; font-size: 14px; }
+  .spin { animation: spin 0.8s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div style="display:flex;align-items:center;gap:24px;">
+    <h1>Crypto Backtest</h1>
+    <nav style="display:flex;gap:16px;">
+      <a href="/" style="color:#888;text-decoration:none;font-size:14px;">回测报告</a>
+      <a href="/optimize" style="color:#888;text-decoration:none;font-size:14px;">参数优化</a>
+      <a href="/live" style="color:#00d4aa;text-decoration:none;font-size:14px;border-bottom:2px solid #00d4aa;padding-bottom:2px;">实盘监控</a>
+    </nav>
+  </div>
+</div>
+
+<div class="filter-bar">
+  <label>账户</label>
+  <select id="accountSelect"><option value="">-- 加载中 --</option></select>
+  <label>标的</label>
+  <select id="symbolSelect"><option value="">-- 选择账户 --</option></select>
+</div>
+
+<div class="tab-bar">
+  <button class="tab-btn active" data-tab="overview">概览</button>
+  <button class="tab-btn" data-tab="orders">订单</button>
+  <button class="tab-btn" data-tab="trades">成交</button>
+  <button class="tab-btn" data-tab="logs">日志</button>
+</div>
+
+<!-- Overview Tab -->
+<div id="tab-overview" class="tab-pane active">
+  <div class="kpi-row">
+    <div class="kpi"><div class="label">余额 USDT</div><div class="value neu-value" id="kpiBalance">—</div></div>
+    <div class="kpi"><div class="label">权益 USDT</div><div class="value neu-value" id="kpiEquity">—</div></div>
+  </div>
+  <div class="pos-card">
+    <div class="pos-title">当前仓位</div>
+    <div id="posContent"><div class="pos-flat">空仓</div></div>
+  </div>
+  <div class="chart-box">
+    <h3>权益曲线</h3>
+    <div id="equityChart"></div>
+  </div>
+</div>
+
+<!-- Orders Tab -->
+<div id="tab-orders" class="tab-pane">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>时间</th><th>方向</th><th>类型</th><th>数量(USDT)</th>
+          <th>委托价</th><th>成交价</th><th>状态</th><th>手续费</th>
+        </tr>
+      </thead>
+      <tbody id="ordersBody"></tbody>
+    </table>
+  </div>
+  <div class="pagination" id="ordersPagination"></div>
+</div>
+
+<!-- Trades Tab -->
+<div id="tab-trades" class="tab-pane">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>时间</th><th>方向</th><th>成交价</th><th>数量(USDT)</th>
+          <th>已实现PnL</th><th>手续费</th>
+        </tr>
+      </thead>
+      <tbody id="tradesBody"></tbody>
+    </table>
+  </div>
+  <div class="pagination" id="tradesPagination"></div>
+</div>
+
+<!-- Logs Tab -->
+<div id="tab-logs" class="tab-pane">
+  <div class="log-controls">
+    <select id="logFileSelect"><option value="">-- 选择日志文件 --</option></select>
+    <input type="text" id="logFilter" placeholder="关键字过滤…">
+    <button id="logRefreshBtn">刷新</button>
+  </div>
+  <div class="log-box" id="logBox"><div class="empty-state">请选择日志文件</div></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let equityChart = null;
+let state = { account: '', symbol: '', ordersPage: 1, tradesPage: 1 };
+
+async function init() {
+  const accounts = await fetchJSON('/api/live/accounts');
+  if (!accounts) return;
+  const sel = $('accountSelect');
+  sel.innerHTML = '<option value="">-- 选择账户 --</option>';
+  accounts.forEach(a => {
+    const opt = document.createElement('option');
+    opt.value = a.account_id;
+    opt.textContent = `${a.account_id} (${a.exchange})`;
+    sel.appendChild(opt);
+  });
+  if (accounts.length === 1) {
+    sel.value = accounts[0].account_id;
+    await onAccountChange();
+  }
+}
+
+$('accountSelect').addEventListener('change', onAccountChange);
+$('symbolSelect').addEventListener('change', onSymbolChange);
+
+async function onAccountChange() {
+  state.account = $('accountSelect').value;
+  $('symbolSelect').innerHTML = '<option value="">-- 加载中 --</option>';
+  if (!state.account) return;
+  const symbols = await fetchJSON(`/api/live/symbols?account_id=${enc(state.account)}`);
+  if (!symbols) return;
+  const sel = $('symbolSelect');
+  sel.innerHTML = '<option value="">-- 选择标的 --</option>';
+  symbols.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s; opt.textContent = s;
+    sel.appendChild(opt);
+  });
+  if (symbols.length === 1) {
+    sel.value = symbols[0];
+    await onSymbolChange();
+  }
+}
+
+async function onSymbolChange() {
+  state.symbol = $('symbolSelect').value;
+  state.ordersPage = 1;
+  state.tradesPage = 1;
+  if (!state.symbol) return;
+  await loadTab(document.querySelector('.tab-btn.active').dataset.tab);
+}
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    $('tab-' + btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'logs') loadLogFiles();
+    else if (state.symbol) loadTab(btn.dataset.tab);
+  });
+});
+
+async function loadTab(tab) {
+  if (tab === 'overview') await loadOverview();
+  else if (tab === 'orders') await loadOrders();
+  else if (tab === 'trades') await loadTrades();
+  else if (tab === 'logs') await loadLogFiles();
+}
+
+async function loadOverview() {
+  if (!state.account || !state.symbol) return;
+  const d = await fetchJSON(`/api/live/overview?account_id=${enc(state.account)}&symbol=${enc(state.symbol)}`);
+  if (!d) return;
+  $('kpiBalance').textContent = fmt2(d.balance);
+  $('kpiEquity').textContent = fmt2(d.equity);
+  renderPosition(d.position);
+  renderEquityChart(d.equity_curve);
+}
+
+function renderPosition(pos) {
+  const el = $('posContent');
+  if (!pos) { el.innerHTML = '<div class="pos-flat">空仓</div>'; return; }
+  const pnlClass = pos.unrealized_pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+  el.innerHTML = `<div class="pos-fields">
+    <div class="pos-field"><div class="f-label">方向</div>
+      <div class="f-value ${pos.side}">${pos.side === 'long' ? '多' : '空'}</div></div>
+    <div class="pos-field"><div class="f-label">数量 USDT</div>
+      <div class="f-value">${fmt2(pos.quantity)}</div></div>
+    <div class="pos-field"><div class="f-label">入场价</div>
+      <div class="f-value">${fmt2(pos.entry_price)}</div></div>
+    <div class="pos-field"><div class="f-label">杠杆</div>
+      <div class="f-value">${pos.leverage}x</div></div>
+    <div class="pos-field"><div class="f-label">保证金</div>
+      <div class="f-value">${fmt2(pos.margin)}</div></div>
+    <div class="pos-field"><div class="f-label">未实现PnL</div>
+      <div class="f-value ${pnlClass}">${fmt2(pos.unrealized_pnl)}</div></div>
+  </div>`;
+}
+
+function renderEquityChart(curve) {
+  if (!equityChart) equityChart = echarts.init($('equityChart'), 'dark');
+  equityChart.setOption({
+    backgroundColor: 'transparent',
+    grid: { left: 60, right: 20, top: 10, bottom: 40 },
+    xAxis: { type: 'time', axisLabel: { color: '#888', fontSize: 11 }, axisLine: { lineStyle: { color: '#333' } } },
+    yAxis: { type: 'value', axisLabel: { color: '#888', fontSize: 11 }, splitLine: { lineStyle: { color: '#1e293b' } } },
+    series: [{
+      type: 'line', data: curve, showSymbol: false,
+      lineStyle: { color: '#00d4aa', width: 1.5 },
+      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+        colorStops: [{ offset: 0, color: '#00d4aa33' }, { offset: 1, color: '#00d4aa05' }] } },
+    }],
+    tooltip: { trigger: 'axis', formatter: p => {
+      const d = new Date(p[0].value[0]);
+      return `${d.toLocaleString('zh-CN')}<br/><b>${fmt2(p[0].value[1])} USDT</b>`;
+    }},
+  });
+}
+
+async function loadOrders() {
+  if (!state.account || !state.symbol) return;
+  const d = await fetchJSON(
+    `/api/live/orders?account_id=${enc(state.account)}&symbol=${enc(state.symbol)}&page=${state.ordersPage}`
+  );
+  if (!d) return;
+  const body = $('ordersBody');
+  body.innerHTML = '';
+  if (!d.items.length) { body.innerHTML = '<tr><td colspan="8" class="empty-state">暂无订单</td></tr>'; }
+  d.items.forEach(o => {
+    const tr = document.createElement('tr');
+    const badge = o.status === 'filled'
+      ? `<span class="badge badge-filled">已成交</span>`
+      : o.status === 'pending'
+      ? `<span class="badge badge-pending">挂单中</span>`
+      : `<span class="badge badge-canceled">已取消</span>`;
+    tr.innerHTML = `
+      <td>${fmtTs(o.ts)}</td>
+      <td class="${o.side === 'buy' ? 'long' : 'short'}">${o.side === 'buy' ? '买/多' : '卖/空'}</td>
+      <td>${o.type}</td>
+      <td>${fmt2(o.quantity)}</td>
+      <td>${o.price != null ? fmt2(o.price) : '—'}</td>
+      <td>${o.filled_price != null ? fmt2(o.filled_price) : '—'}</td>
+      <td>${badge}</td>
+      <td>${o.commission != null ? fmt4(o.commission) : '—'}</td>`;
+    body.appendChild(tr);
+  });
+  renderPagination('ordersPagination', d.total, d.page, d.page_size, p => { state.ordersPage = p; loadOrders(); });
+}
+
+async function loadTrades() {
+  if (!state.account || !state.symbol) return;
+  const d = await fetchJSON(
+    `/api/live/trades?account_id=${enc(state.account)}&symbol=${enc(state.symbol)}&page=${state.tradesPage}`
+  );
+  if (!d) return;
+  const body = $('tradesBody');
+  body.innerHTML = '';
+  if (!d.items.length) { body.innerHTML = '<tr><td colspan="6" class="empty-state">暂无成交</td></tr>'; }
+  d.items.forEach(t => {
+    const tr = document.createElement('tr');
+    const pnlClass = (t.realized_pnl || 0) >= 0 ? 'pnl-pos' : 'pnl-neg';
+    tr.innerHTML = `
+      <td>${fmtTs(t.ts)}</td>
+      <td class="${t.side === 'buy' ? 'long' : 'short'}">${t.side === 'buy' ? '买/多' : '卖/空'}</td>
+      <td>${fmt2(t.price)}</td>
+      <td>${fmt2(t.notional)}</td>
+      <td class="${pnlClass}">${fmt2(t.realized_pnl ?? 0)}</td>
+      <td>${fmt4(t.commission)}</td>`;
+    body.appendChild(tr);
+  });
+  if (d.items.length) {
+    const tr = document.createElement('tr');
+    tr.className = 'summary-row';
+    const pClass = d.summary.total_pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+    tr.innerHTML = `<td colspan="4">全部汇总</td>
+      <td class="${pClass}">${fmt2(d.summary.total_pnl)}</td>
+      <td>${fmt4(d.summary.total_commission)}</td>`;
+    body.appendChild(tr);
+  }
+  renderPagination('tradesPagination', d.total, d.page, d.page_size, p => { state.tradesPage = p; loadTrades(); });
+}
+
+async function loadLogFiles() {
+  const files = await fetchJSON('/api/live/logs');
+  if (!files) return;
+  const sel = $('logFileSelect');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">-- 选择日志文件 --</option>';
+  files.forEach(f => {
+    const opt = document.createElement('option');
+    opt.value = f.filename;
+    opt.textContent = `${f.filename}  (${new Date(f.mtime).toLocaleString('zh-CN')})`;
+    sel.appendChild(opt);
+  });
+  if (prev && files.find(f => f.filename === prev)) sel.value = prev;
+}
+
+$('logFileSelect').addEventListener('change', () => { if ($('logFileSelect').value) loadLogContent(); });
+$('logRefreshBtn').addEventListener('click', () => { if ($('logFileSelect').value) loadLogContent(); });
+$('logFilter').addEventListener('input', applyLogFilter);
+
+async function loadLogContent() {
+  const filename = $('logFileSelect').value;
+  if (!filename) return;
+  $('logBox').innerHTML = '<div class="empty-state"><span class="spin">⟳</span> 加载中…</div>';
+  const d = await fetchJSON(`/api/live/logs/${encodeURIComponent(filename)}?tail=500`);
+  const box = $('logBox');
+  box.innerHTML = '';
+  if (!d || !d.lines.length) { box.innerHTML = '<div class="empty-state">日志为空</div>'; return; }
+  d.lines.forEach(line => {
+    const div = document.createElement('div');
+    div.className = 'log-line';
+    if (line.includes('[WARNING]') || line.includes('[WARN]')) div.classList.add('level-warn');
+    if (line.includes('[ERROR]') || line.includes('[CRITICAL]')) div.classList.add('level-error');
+    div.textContent = line;
+    box.appendChild(div);
+  });
+  applyLogFilter();
+}
+
+function applyLogFilter() {
+  const kw = $('logFilter').value.toLowerCase();
+  document.querySelectorAll('.log-line').forEach(el => {
+    el.classList.toggle('hidden', kw !== '' && !el.textContent.toLowerCase().includes(kw));
+  });
+}
+
+function renderPagination(containerId, total, page, pageSize, onPage) {
+  const el = $(containerId);
+  const totalPages = Math.ceil(total / pageSize);
+  if (totalPages <= 1) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <button ${page <= 1 ? 'disabled' : ''} id="${containerId}_prev">上一页</button>
+    <span class="pg-info">第 ${page} / ${totalPages} 页，共 ${total} 条</span>
+    <button ${page >= totalPages ? 'disabled' : ''} id="${containerId}_next">下一页</button>`;
+  el.querySelector(`#${containerId}_prev`)?.addEventListener('click', () => onPage(page - 1));
+  el.querySelector(`#${containerId}_next`)?.addEventListener('click', () => onPage(page + 1));
+}
+
+async function fetchJSON(url) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    return r.json();
+  } catch { return null; }
+}
+
+const enc = encodeURIComponent;
+const fmt2 = v => v == null ? '—' : Number(v).toFixed(2);
+const fmt4 = v => v == null ? '—' : Number(v).toFixed(4);
+function fmtTs(ms) {
+  if (!ms) return '—';
+  return new Date(ms).toLocaleString('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+}
+
+init();
+</script>
+</body>
+</html>
