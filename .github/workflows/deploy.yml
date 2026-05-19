@@ -33,7 +33,7 @@ jobs:
             pip install -e . -q
 
             echo "=== Restarting service ==="
-            systemctl --user restart trading-bot
+            systemctl --user restart trading-consecutive
 
             echo "=== Service status ==="
-            systemctl --user status trading-bot --no-pager -l
+            systemctl --user status trading-consecutive --no-pager -l
