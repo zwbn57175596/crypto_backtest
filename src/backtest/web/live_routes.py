@@ -139,7 +139,7 @@ def get_overview(request: Request, account_id: str = Query(...), symbol: str = Q
         (account_id, symbol),
     ).fetchone()
     curve_rows = conn.execute(
-        "SELECT ts, equity FROM positions WHERE account_id=? AND symbol=? ORDER BY ts ASC",
+        "SELECT ts, equity FROM positions WHERE account_id=? AND symbol=? ORDER BY ts ASC LIMIT 2000",
         (account_id, symbol),
     ).fetchall()
     conn.close()
@@ -230,22 +230,31 @@ def list_trades(
 
 @router.get("/api/live/logs")
 def list_log_files(request: Request):
-    log_path = Path(_log_dir(request))
-    if not log_path.exists():
+    raw = _log_dir(request)
+    if not raw:
         return []
-    files = sorted(log_path.glob("*.log"), key=lambda f: f.stat().st_mtime, reverse=True)
-    return [
-        {"filename": f.name, "mtime": int(f.stat().st_mtime * 1000), "size": f.stat().st_size}
-        for f in files
-    ]
+    log_path = Path(raw)
+    if not log_path.is_dir():
+        return []
+    result = []
+    for f in sorted(log_path.glob("*.log"), key=lambda f: f.stat().st_mtime if f.exists() else 0, reverse=True):
+        try:
+            st = f.stat()
+            result.append({"filename": f.name, "mtime": int(st.st_mtime * 1000), "size": st.st_size})
+        except FileNotFoundError:
+            pass
+    return result
 
 
 @router.get("/api/live/logs/{filename}")
 def get_log_file(filename: str, request: Request, tail: int = Query(500, ge=1, le=10000)):
     if not re.fullmatch(r"[a-zA-Z0-9_\-\.]+\.log", filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
-    log_dir_path = Path(_log_dir(request))
-    if not log_dir_path.exists():
+    raw_log_dir = _log_dir(request)
+    if not raw_log_dir:
+        raise HTTPException(status_code=404, detail="Log directory not configured")
+    log_dir_path = Path(raw_log_dir)
+    if not log_dir_path.is_dir():
         raise HTTPException(status_code=404, detail="Log directory not configured")
     try:
         filepath = (log_dir_path / filename).resolve()
