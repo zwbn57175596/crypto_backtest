@@ -317,7 +317,7 @@ class OKXConnector(BaseExchangeConnector):
 
     def fetch_mark_price(self, symbol: str) -> float:
         inst_id = self._inst_id(symbol)
-        resp = _retry(lambda: self._market.get_mark_price(instType="SWAP", instId=inst_id))
+        resp = _retry(lambda: self._public.get_mark_price(instType="SWAP", instId=inst_id))
         return float(resp["data"][0]["markPx"])
 
     def fetch_orders(self, symbol: str, since_ms: int | None = None) -> list[dict]:
