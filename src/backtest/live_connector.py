@@ -67,7 +67,8 @@ class BaseExchangeConnector(ABC):
 
     @abstractmethod
     def submit_order(self, symbol: str, side: str, type_: str,
-                     quantity: float, price: float | None = None) -> dict:
+                     quantity: float, price: float | None = None,
+                     client_order_id: str | None = None) -> dict:
         """Returns raw exchange response dict."""
         ...
 
@@ -150,7 +151,8 @@ class BinanceConnector(BaseExchangeConnector):
         return [self._normalize_trade(t) for t in raw]
 
     def submit_order(self, symbol: str, side: str, type_: str,
-                     quantity: float, price: float | None = None) -> dict:
+                     quantity: float, price: float | None = None,
+                     client_order_id: str | None = None) -> dict:
         if type_ == "limit" and price is None:
             raise ValueError("price is required for limit orders")
         params: dict = {
@@ -162,6 +164,8 @@ class BinanceConnector(BaseExchangeConnector):
         if type_ == "limit" and price is not None:
             params["price"] = price
             params["timeInForce"] = "GTC"
+        if client_order_id is not None:
+            params["newClientOrderId"] = client_order_id
         return _retry(lambda: self._client.new_order(**params))
 
     def query_order(self, symbol: str, order_id: str) -> dict:
@@ -176,6 +180,7 @@ class BinanceConnector(BaseExchangeConnector):
         status = o["status"].lower()
         return {
             "order_id": str(o["orderId"]),
+            "client_order_id": o.get("clientOrderId"),
             "symbol": o["symbol"],
             "side": o["side"].lower(),
             "type": "market" if o["type"] == "MARKET" else "limit",

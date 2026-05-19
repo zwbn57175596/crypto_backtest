@@ -66,7 +66,7 @@ class ShadowPowerStrategy(BaseStrategy):
     # 止损
     RATE_OF_STOPLOSS = 0.5
     STOPLOSS_FACTOR = 1 / RATE_OF_STOPLOSS  # = 2.0
-    TB_LOST_LIMIT = 0.3            # TB 止损阈值
+    TB_LOST_LIMIT = 0.465          # TB 止损阈值
 
     # 追仓
     WEEKLY_CHECK_SEC = 60 * 60 * 24 * 5  # 5天
@@ -75,7 +75,7 @@ class ShadowPowerStrategy(BaseStrategy):
     # 连续盈亏调整
     MAX_NEGATIVE_POWER = 10
     MAX_POSITIVE_POWER = 6
-    BASE_FOR_POWER = 0.3
+    BASE_FOR_POWER = 0.166
     NEGATIVE_CONFIG = 0
     ROUNDED_E = 2.7183
 

@@ -28,21 +28,22 @@ class LiveHistoryDB:
                     ts          INTEGER NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS orders (
-                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                    account_id   TEXT    NOT NULL,
-                    exchange     TEXT    NOT NULL,
-                    symbol       TEXT    NOT NULL,
-                    order_id     TEXT    NOT NULL,
-                    side         TEXT    NOT NULL,
-                    type         TEXT    NOT NULL,
-                    quantity     REAL    NOT NULL,
-                    price        REAL,
-                    status       TEXT    NOT NULL,
-                    filled_price REAL,
-                    filled_qty   REAL,
-                    commission   REAL,
-                    ts           INTEGER NOT NULL,
-                    filled_at    INTEGER,
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id      TEXT    NOT NULL,
+                    exchange        TEXT    NOT NULL,
+                    symbol          TEXT    NOT NULL,
+                    order_id        TEXT    NOT NULL,
+                    client_order_id TEXT,
+                    side            TEXT    NOT NULL,
+                    type            TEXT    NOT NULL,
+                    quantity        REAL    NOT NULL,
+                    price           REAL,
+                    status          TEXT    NOT NULL,
+                    filled_price    REAL,
+                    filled_qty      REAL,
+                    commission      REAL,
+                    ts              INTEGER NOT NULL,
+                    filled_at       INTEGER,
                     UNIQUE (exchange, account_id, order_id)
                 );
                 CREATE TABLE IF NOT EXISTS positions (
@@ -77,6 +78,11 @@ class LiveHistoryDB:
                     UNIQUE (exchange, account_id, trade_id)
                 );
             """)
+            # migrate existing DBs that predate the client_order_id column
+            try:
+                conn.execute("ALTER TABLE orders ADD COLUMN client_order_id TEXT")
+            except sqlite3.OperationalError:
+                pass
 
     def record_state_snapshot(self, account_id: str, exchange: str, strategy: str,
                                symbol: str, interval: str, state: dict, ts: int) -> None:
@@ -108,10 +114,11 @@ class LiveHistoryDB:
         with self._lock, sqlite3.connect(self._db_path) as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO orders "
-                "(account_id, exchange, symbol, order_id, side, type, quantity, price, "
+                "(account_id, exchange, symbol, order_id, client_order_id, side, type, quantity, price, "
                 "status, filled_price, filled_qty, commission, ts, filled_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (account_id, exchange, order["symbol"], order["order_id"],
+                 order.get("client_order_id"),
                  order["side"], order["type"], order["quantity"], order.get("price"),
                  order["status"], order.get("filled_price"), order.get("filled_qty"),
                  order.get("commission"), order["ts"], order.get("filled_at")),

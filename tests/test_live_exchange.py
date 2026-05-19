@@ -203,3 +203,77 @@ class TestLiveExchangeWaitFills:
         ex = _make_ex(connector=connector)
         ex.wait_fills()
         connector.query_order.assert_not_called()
+
+
+class TestRiskLimits:
+    def _make_risk_ex(self, **risk_kwargs):
+        from backtest.live_exchange import LiveExchange
+        connector = _make_connector(balance=1000.0, mark_price=50000.0)
+        connector.submit_order.return_value = {"orderId": 1}
+        ex = LiveExchange(
+            connector=connector,
+            history_db=_make_history_db(),
+            account_id="testacc",
+            symbol="BTCUSDT",
+            leverage=10,
+            commission_rate=0.0004,
+            dry_run=False,
+            **risk_kwargs,
+        )
+        ex.sync()
+        return ex
+
+    def test_max_order_notional_blocks_large_order(self):
+        from backtest.live_exchange import RiskLimitError
+        ex = self._make_risk_ex(max_order_notional=500.0)
+        with pytest.raises(RiskLimitError, match="per-order limit"):
+            ex.submit_order("BTCUSDT", "buy", "market", 600.0)
+
+    def test_max_order_notional_allows_small_order(self):
+        ex = self._make_risk_ex(max_order_notional=500.0)
+        ex.submit_order("BTCUSDT", "buy", "market", 400.0)  # should not raise
+
+    def test_max_daily_notional_accumulates(self):
+        from backtest.live_exchange import RiskLimitError
+        ex = self._make_risk_ex(max_daily_notional=800.0)
+        ex.submit_order("BTCUSDT", "buy", "market", 400.0)
+        with pytest.raises(RiskLimitError, match="daily notional"):
+            ex.submit_order("BTCUSDT", "buy", "market", 500.0)
+
+    def test_max_session_loss_kills_switch(self):
+        from backtest.live_exchange import RiskLimitError
+        ex = self._make_risk_ex(max_session_loss=100.0)
+        # simulate session start equity = 1000, then equity drops to 850
+        ex._session_start_equity = 1000.0
+        ex._balance = 850.0
+        with pytest.raises(RiskLimitError, match="kill-switch"):
+            ex.submit_order("BTCUSDT", "buy", "market", 100.0)
+
+    def test_order_rate_limit(self):
+        from backtest.live_exchange import RiskLimitError
+        ex = self._make_risk_ex(order_rate=(2, 60))
+        ex.submit_order("BTCUSDT", "buy", "market", 100.0)
+        ex.submit_order("BTCUSDT", "buy", "market", 100.0)
+        with pytest.raises(RiskLimitError, match="rate limit"):
+            ex.submit_order("BTCUSDT", "buy", "market", 100.0)
+
+    def test_session_start_equity_set_on_first_sync(self):
+        ex = self._make_risk_ex()
+        assert ex._session_start_equity == ex.equity
+
+    def test_dry_run_also_respects_pretrade_check(self):
+        from backtest.live_exchange import LiveExchange, RiskLimitError
+        connector = _make_connector(mark_price=50000.0)
+        ex = LiveExchange(
+            connector=connector,
+            history_db=_make_history_db(),
+            account_id="testacc",
+            symbol="BTCUSDT",
+            leverage=10,
+            commission_rate=0.0004,
+            dry_run=True,
+            max_order_notional=200.0,
+        )
+        ex.sync()
+        with pytest.raises(RiskLimitError):
+            ex.submit_order("BTCUSDT", "buy", "market", 300.0)

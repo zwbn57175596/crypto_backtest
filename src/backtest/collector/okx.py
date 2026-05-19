@@ -1,9 +1,11 @@
+import asyncio
 import httpx
 from backtest.collector.base import BaseCollector
 from backtest.models import Bar
 
 _BASE_URL = "https://www.okx.com"
 _LIMIT = 100
+_DELAY = 0.3  # seconds between requests to avoid rate limiting
 
 
 def _symbol_to_inst_id(symbol: str) -> str:
@@ -21,10 +23,15 @@ class OkxCollector(BaseCollector):
             current = end_ms
             while current > start_ms:
                 params = {"instId": inst_id, "bar": okx_bar,
-                          "after": str(start_ms - 1), "before": str(current + 1),
+                          "after": str(current), "before": str(start_ms - 1),
                           "limit": str(_LIMIT)}
-                resp = await client.get(f"{_BASE_URL}/api/v5/market/history-candles", params=params)
-                resp.raise_for_status()
+                for attempt in range(3):
+                    resp = await client.get(f"{_BASE_URL}/api/v5/market/history-candles", params=params)
+                    if resp.status_code == 429:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    resp.raise_for_status()
+                    break
                 data = resp.json().get("data", [])
                 if not data:
                     break
@@ -35,6 +42,7 @@ class OkxCollector(BaseCollector):
                 current = min(int(row[0]) for row in data) - 1
                 if len(data) < _LIMIT:
                     break
+                await asyncio.sleep(_DELAY)
 
     @staticmethod
     def _convert_interval(interval: str) -> str:

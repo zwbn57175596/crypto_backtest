@@ -611,7 +611,7 @@ class NumbaGridOptimizer:
                 "POSITION_MULTIPLIER",
                 "INITIAL_POSITION_PCT",
                 "PROFIT_CANDLE_THRESHOLD",
-                "LEVERAGE",
+                "SIZE_LEVERAGE",
             ],
         )
 
@@ -619,7 +619,7 @@ class NumbaGridOptimizer:
             # Single process - fastest for small grids
             results = []
             for i, params in enumerate(combos, 1):
-                sizing_lev = int(params.get("LEVERAGE", default_params.get("LEVERAGE", self.leverage)))
+                sizing_lev = int(params.get("SIZE_LEVERAGE", default_params.get("SIZE_LEVERAGE", self.leverage)))
                 result = simulate_fn(
                     bars,
                     threshold=int(params.get("CONSECUTIVE_THRESHOLD", default_params.get("CONSECUTIVE_THRESHOLD", 5))),
@@ -650,7 +650,7 @@ class NumbaGridOptimizer:
             trial_args = [
                 (
                     params,
-                    int(params.get("LEVERAGE", default_params.get("LEVERAGE", self.leverage))),
+                    int(params.get("SIZE_LEVERAGE", default_params.get("SIZE_LEVERAGE", self.leverage))),
                     self.leverage,
                     self.commission_rate,
                     self.funding_rate,
@@ -705,6 +705,8 @@ def save_results(
     result: OptimizeResult,
     top_n: int | None = 1000,
     leverage: int | None = None,
+    strategy_path: str | None = None,
+    exchange: str | None = None,
 ) -> None:
     """Save top N optimization trials to SQLite (default: top 1000)."""
     from datetime import datetime, timezone
@@ -724,7 +726,9 @@ def save_results(
             report_json TEXT NOT NULL,
             created_at TEXT NOT NULL,
             batch_id TEXT,
-            leverage REAL
+            leverage REAL,
+            strategy_path TEXT,
+            exchange TEXT
         )
     """)
 
@@ -738,6 +742,20 @@ def save_results(
     # Idempotent migration — add leverage column if not present
     try:
         conn.execute("ALTER TABLE optimize_results ADD COLUMN leverage REAL")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+    # Idempotent migration — add strategy_path column if not present
+    try:
+        conn.execute("ALTER TABLE optimize_results ADD COLUMN strategy_path TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+    # Idempotent migration — add exchange column if not present
+    try:
+        conn.execute("ALTER TABLE optimize_results ADD COLUMN exchange TEXT")
         conn.commit()
     except sqlite3.OperationalError:
         pass  # column already exists
@@ -764,14 +782,16 @@ def save_results(
             now,
             batch_id,
             leverage,
+            strategy_path,
+            exchange,
         )
         for trial in trials
     ]
 
     conn.executemany(
         "INSERT INTO optimize_results "
-        "(strategy, symbol, interval, start_date, end_date, objective, score, params_json, report_json, created_at, batch_id, leverage) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "(strategy, symbol, interval, start_date, end_date, objective, score, params_json, report_json, created_at, batch_id, leverage, strategy_path, exchange) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         rows,
     )
     conn.commit()

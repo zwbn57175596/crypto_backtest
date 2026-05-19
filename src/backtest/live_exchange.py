@@ -2,16 +2,26 @@
 import math
 import time
 import uuid
+from collections import deque
+from datetime import date
 
 from backtest.live_connector import BaseExchangeConnector
 from backtest.live_history import LiveHistoryDB
 from backtest.models import Order, Position
 
 
+class RiskLimitError(Exception):
+    pass
+
+
 class LiveExchange:
     def __init__(self, connector: BaseExchangeConnector, history_db: LiveHistoryDB,
                  account_id: str, symbol: str, leverage: int,
-                 commission_rate: float, dry_run: bool = False):
+                 commission_rate: float, dry_run: bool = False,
+                 max_order_notional: float | None = None,
+                 max_daily_notional: float | None = None,
+                 max_session_loss: float | None = None,
+                 order_rate: tuple[int, int] | None = None):
         self._connector = connector
         self._history_db = history_db
         self._account_id = account_id
@@ -24,6 +34,15 @@ class LiveExchange:
         self._current_price: float = 0.0
         self._lot_step: float = 0.001
         self._pending_order_ids: list[str] = []
+        # risk limits
+        self._max_order_notional = max_order_notional
+        self._max_daily_notional = max_daily_notional
+        self._max_session_loss = max_session_loss
+        self._order_rate = order_rate
+        self._session_start_equity: float | None = None
+        self._daily_date: date | None = None
+        self._daily_notional: float = 0.0
+        self._order_timestamps: deque[float] = deque()
         self._fetch_lot_step()
 
     def _fetch_lot_step(self) -> None:
@@ -61,6 +80,8 @@ class LiveExchange:
                     margin=margin,
                 )
         self._current_price = self._connector.fetch_mark_price(self._symbol)
+        if self._session_start_equity is None:
+            self._session_start_equity = self.equity
         self._history_db.record_position(
             self._account_id, self._connector.exchange_name,
             self._symbol, self._position, self._balance, self.equity,
@@ -71,6 +92,36 @@ class LiveExchange:
         if self._position and self._position.symbol == symbol:
             return self._position
         return None
+
+    def _pretrade_check(self, quantity: float) -> None:
+        if self._max_order_notional is not None and quantity > self._max_order_notional:
+            raise RiskLimitError(
+                f"order {quantity:.2f} USDT exceeds per-order limit {self._max_order_notional:.2f}"
+            )
+        if self._max_daily_notional is not None:
+            today = date.today()
+            if today != self._daily_date:
+                self._daily_date = today
+                self._daily_notional = 0.0
+            if self._daily_notional + quantity > self._max_daily_notional:
+                raise RiskLimitError(
+                    f"daily notional {self._daily_notional + quantity:.2f} USDT would exceed limit {self._max_daily_notional:.2f}"
+                )
+        if self._max_session_loss is not None and self._session_start_equity is not None:
+            loss = self._session_start_equity - self.equity
+            if loss >= self._max_session_loss:
+                raise RiskLimitError(
+                    f"session loss {loss:.2f} USDT reached limit {self._max_session_loss:.2f}, kill-switch active"
+                )
+        if self._order_rate is not None:
+            max_count, window_sec = self._order_rate
+            now = time.time()
+            while self._order_timestamps and now - self._order_timestamps[0] >= window_sec:
+                self._order_timestamps.popleft()
+            if len(self._order_timestamps) >= max_count:
+                raise RiskLimitError(
+                    f"order rate limit: {max_count} orders per {window_sec}s"
+                )
 
     @property
     def leverage(self) -> int:
@@ -88,12 +139,19 @@ class LiveExchange:
 
     def submit_order(self, symbol: str, side: str, type_: str,
                      quantity: float, price: float | None = None) -> Order:
+        self._pretrade_check(quantity)
+        if self._max_daily_notional is not None:
+            self._daily_notional += quantity
+        if self._order_rate is not None:
+            self._order_timestamps.append(time.time())
+
         order_id = uuid.uuid4().hex[:8]
         ts = int(time.time() * 1000)
 
         if self._dry_run:
             order_dict = {
-                "order_id": order_id, "symbol": symbol, "side": side, "type": type_,
+                "order_id": order_id, "client_order_id": order_id,
+                "symbol": symbol, "side": side, "type": type_,
                 "quantity": quantity, "price": price, "status": "filled",
                 "filled_price": self._current_price,
                 "filled_qty": quantity / self._current_price if self._current_price else 0,
@@ -114,11 +172,13 @@ class LiveExchange:
             return Order(id=order_id, symbol=symbol, side=side, type=type_,
                          quantity=quantity, price=price, status="canceled")
 
-        resp = self._connector.submit_order(symbol, side, type_, contract_qty, price)
+        resp = self._connector.submit_order(symbol, side, type_, contract_qty, price,
+                                            client_order_id=order_id)
         exchange_id = str(resp["orderId"])
 
         order_dict = {
-            "order_id": exchange_id, "symbol": symbol, "side": side, "type": type_,
+            "order_id": exchange_id, "client_order_id": order_id,
+            "symbol": symbol, "side": side, "type": type_,
             "quantity": quantity, "price": price, "status": "pending",
             "filled_price": None, "filled_qty": None, "commission": None,
             "ts": ts, "filled_at": None,

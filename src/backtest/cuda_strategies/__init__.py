@@ -25,7 +25,7 @@ def _register():
             "POSITION_MULTIPLIER",
             "INITIAL_POSITION_PCT",
             "PROFIT_CANDLE_THRESHOLD",
-            "LEVERAGE",
+            "SIZE_LEVERAGE",
         ]
         CUDA_STRATEGIES["ConsecutiveReverseMartingaleStrategy"] = {
             "kernel": consecutive_reverse_kernel,

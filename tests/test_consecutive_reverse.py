@@ -12,6 +12,29 @@ _PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 
+def test_size_leverage_attr_exists():
+    from strategies.consecutive_reverse import ConsecutiveReverseStrategy
+    assert hasattr(ConsecutiveReverseStrategy, "SIZE_LEVERAGE")
+    assert not hasattr(ConsecutiveReverseStrategy, "LEVERAGE")
+
+
+def test_calc_quantity_uses_size_leverage():
+    from strategies.consecutive_reverse import ConsecutiveReverseStrategy
+    from backtest.exchange import SimExchange
+    exchange = SimExchange(balance=1000.0, leverage=50,
+                           commission_rate=0.0004, funding_rate=0.0001,
+                           maintenance_margin=0.005)
+    strategy = ConsecutiveReverseStrategy(exchange=exchange, symbol="BTCUSDT")
+    strategy.on_init()
+    strategy.SIZE_LEVERAGE = 10
+    strategy.INITIAL_POSITION_PCT = 0.01
+    strategy.CONSECUTIVE_THRESHOLD = 3
+    strategy.POSITION_MULTIPLIER = 1.0
+    strategy._consecutive_count = 3
+    # base = 1000 * 0.01 = 10, n=1, mult=1.0^0=1, qty = 10 * 1 * 10 = 100
+    assert strategy._calc_quantity() == pytest.approx(100.0)
+
+
 def make_bar(open_: float, close: float, ts: int = 1000) -> Bar:
     """Helper to create a Bar with given open/close."""
     return Bar(

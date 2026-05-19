@@ -26,6 +26,61 @@ def _parse_date_to_ms(date_str: str) -> int:
     return int(dt.timestamp() * 1000)
 
 
+def _load_optimize_result(optimize_id: int, db_arg: str | None) -> dict:
+    """Load run parameters from optimize_results table by id."""
+    import json, sqlite3
+    from pathlib import Path
+    report_db = db_arg or str(Path("data") / "reports.db")
+    conn = sqlite3.connect(report_db)
+    # Detect which optional columns exist (strategy_path/exchange added in Task 4;
+    # older DBs may not have them yet).
+    existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(optimize_results)")}
+    has_strategy_path = "strategy_path" in existing_cols
+    has_exchange = "exchange" in existing_cols
+    select_cols = (
+        ("strategy_path, " if has_strategy_path else "NULL, ")
+        + "symbol, interval, start_date, end_date, leverage, "
+        + ("exchange, " if has_exchange else "NULL, ")
+        + "params_json"
+    )
+    row = conn.execute(
+        f"SELECT {select_cols} FROM optimize_results WHERE id = ?",
+        (optimize_id,),
+    ).fetchone()
+    conn.close()
+    if row is None:
+        sys.exit(f"optimize_results id={optimize_id} not found in {report_db}")
+    strategy_path, symbol, interval, start_date, end_date, leverage, exchange, params_json = row
+    return {
+        "strategy_path": strategy_path,
+        "symbol": symbol,
+        "interval": interval,
+        "start": start_date,
+        "end": end_date,
+        "leverage": int(leverage) if leverage is not None else None,
+        "exchange": exchange or "binance",
+        "params": json.loads(params_json),
+    }
+
+
+def _apply_optimize_params(strategy_class: type, params: dict) -> None:
+    """Apply params dict from optimize_results to strategy class attributes."""
+    for key, value in params.items():
+        attr = key
+        # backward compat: old DB records use "LEVERAGE"; new strategies use "SIZE_LEVERAGE"
+        if key == "LEVERAGE" and not hasattr(strategy_class, "LEVERAGE") \
+                and hasattr(strategy_class, "SIZE_LEVERAGE"):
+            attr = "SIZE_LEVERAGE"
+        if not hasattr(strategy_class, attr):
+            continue
+        try:
+            setattr(strategy_class, attr, type(getattr(strategy_class, attr))(value))
+            print(f"  [param] {attr} = {value}")
+        except (TypeError, ValueError):
+            setattr(strategy_class, attr, value)
+            print(f"  [param] {attr} = {value}")
+
+
 def cmd_collect(args: argparse.Namespace) -> None:
     from backtest.collector import COLLECTORS
     collector_cls = COLLECTORS.get(args.exchange)
@@ -92,12 +147,40 @@ def cmd_run(args: argparse.Namespace, extra_args: list[str] | None = None) -> No
         with open(config_path) as f:
             config = yaml.safe_load(f).get("backtest", {})
 
+    optimize_params: dict | None = None
+    if args.optimize_id is not None:
+        opt = _load_optimize_result(args.optimize_id, args.db)
+        if opt["strategy_path"] is None and args.strategy is None:
+            sys.exit(
+                f"optimize_results id={args.optimize_id} has no strategy_path; "
+                "pass --strategy to specify the file"
+            )
+        args.strategy  = args.strategy  or opt["strategy_path"]
+        args.symbol    = args.symbol    or opt["symbol"]
+        args.interval  = args.interval  or opt["interval"]
+        args.start     = args.start     or opt["start"]
+        args.end       = args.end       or opt["end"]
+        args.leverage  = args.leverage  or opt["leverage"]
+        args.exchange  = args.exchange  or opt["exchange"]
+        optimize_params = opt["params"]
+
+    # Validate required args (may have been filled by --optimize-id)
+    if not args.strategy:
+        sys.exit("--strategy is required (or use --optimize-id)")
+    if not args.symbol:
+        sys.exit("--symbol is required (or use --optimize-id)")
+    if not args.interval:
+        sys.exit("--interval is required (or use --optimize-id)")
+
     strategy_class = _load_strategy(args.strategy)
+    if optimize_params:
+        _apply_optimize_params(strategy_class, optimize_params)
     if extra_args:
         _apply_extra_params(strategy_class, extra_args)
     if args.sizing_leverage is not None:
-        strategy_class.LEVERAGE = args.sizing_leverage
-        print(f"  [param] LEVERAGE (sizing) = {args.sizing_leverage}")
+        attr = "SIZE_LEVERAGE" if hasattr(strategy_class, "SIZE_LEVERAGE") else "LEVERAGE"
+        setattr(strategy_class, attr, args.sizing_leverage)
+        print(f"  [param] {attr} = {args.sizing_leverage}")
     db_path = args.db or str(Path("data") / "klines.db")
 
     engine = BacktestEngine(
@@ -296,6 +379,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         result=result,
         top_n=save_n,
         leverage=args.leverage,
+        strategy_path=args.strategy,
+        exchange=args.exchange,
     )
     saved = save_n if save_n else result.total_trials
     print(f"\nResults saved to database ({min(saved, result.total_trials)} rows).")
@@ -371,6 +456,15 @@ def cmd_live(args: argparse.Namespace) -> None:
     account_id = hashlib.sha256(api_key.encode()).hexdigest()[:16] if api_key else "dry_run"
     history_db = LiveHistoryDB(args.history_db)
 
+    order_rate: tuple[int, int] | None = None
+    if args.order_rate:
+        try:
+            n, s = args.order_rate.split("/")
+            order_rate = (int(n), int(s))
+        except (ValueError, AttributeError):
+            print(f"Error: --order-rate must be N/S (e.g. 5/60), got: {args.order_rate!r}")
+            sys.exit(1)
+
     engine = LiveEngine(
         strategy_class=strategy_class,
         symbol=args.symbol,
@@ -383,6 +477,10 @@ def cmd_live(args: argparse.Namespace) -> None:
         dry_run=args.dry_run,
         state_db=args.state_db,
         sync_interval=args.sync_interval,
+        max_order_notional=args.max_order_notional,
+        max_daily_notional=args.max_daily_notional,
+        max_session_loss=args.max_session_loss,
+        order_rate=order_rate,
     )
     engine.run()
 
@@ -400,10 +498,12 @@ def main() -> None:
     p_collect.add_argument("--db", default=None)
 
     p_run = sub.add_parser("run", help="Run backtest")
-    p_run.add_argument("--strategy", required=True)
-    p_run.add_argument("--symbol", required=True)
-    p_run.add_argument("--interval", required=True)
-    p_run.add_argument("--exchange", default="binance")
+    p_run.add_argument("--strategy", default=None)
+    p_run.add_argument("--symbol", default=None)
+    p_run.add_argument("--interval", default=None)
+    p_run.add_argument("--exchange", default=None)
+    p_run.add_argument("--optimize-id", type=int, default=None, dest="optimize_id",
+                       help="Load all params from optimize_results id; replaces manual param flags")
     p_run.add_argument("--start", default=None)
     p_run.add_argument("--end", default=None)
     p_run.add_argument("--balance", type=float, default=None)
@@ -426,7 +526,7 @@ def main() -> None:
     p_opt.add_argument("--exchange", default="binance")
     p_opt.add_argument("--start", required=True, help="YYYY-MM-DD")
     p_opt.add_argument("--end", required=True, help="YYYY-MM-DD")
-    p_opt.add_argument("--balance", type=float, default=10000.0)
+    p_opt.add_argument("--balance", type=float, default=1000.0)
     p_opt.add_argument("--leverage", type=int, default=10)
     p_opt.add_argument("--margin-mode", choices=["isolated", "cross"], default="isolated", dest="margin_mode",
                        help="Margin mode (isolated=per-position, cross=account-wide)")
@@ -461,6 +561,14 @@ def main() -> None:
                         help="Seconds between background exchange syncs (default: 300)")
     p_live.add_argument("--env-file", default=None, dest="env_file",
                         help="Path to .env file containing BINANCE_API_KEY and BINANCE_SECRET")
+    p_live.add_argument("--max-order-notional", type=float, default=None, dest="max_order_notional",
+                        help="Max single order size in USDT (default: no limit)")
+    p_live.add_argument("--max-daily-notional", type=float, default=None, dest="max_daily_notional",
+                        help="Max total order notional per UTC day in USDT (default: no limit)")
+    p_live.add_argument("--max-session-loss", type=float, default=None, dest="max_session_loss",
+                        help="Max session loss in USDT before kill-switch (default: no limit)")
+    p_live.add_argument("--order-rate", default=None, dest="order_rate",
+                        help="Max order rate as N/S, e.g. 5/60 = max 5 orders per 60s (default: no limit)")
     p_live.add_argument("extra_params", nargs=argparse.REMAINDER,
                         help="Extra strategy params e.g. --CONSECUTIVE_THRESHOLD 5")
 
