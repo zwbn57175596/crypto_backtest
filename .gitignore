@@ -16,6 +16,9 @@ data/*.key
 .claude/
 .superpowers/
 
+.worktrees/
+
 .env
 
 .codex.worktrees/
+.codex
