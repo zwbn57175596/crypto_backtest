@@ -33,12 +33,25 @@ def _migrate_db(db_path: str) -> None:
     conn.close()
 
 
-def create_app(db_path: str) -> FastAPI:
+def create_app(
+    db_path: str,
+    live_db_path: str | None = None,
+    log_dir: str | None = None,
+) -> FastAPI:
     app = FastAPI(title="Crypto Backtest")
     app.state.db_path = db_path
+    app.state.live_db_path = live_db_path or ""
+    app.state.log_dir = log_dir or ""
     _migrate_db(db_path)
+
+    from backtest.web.middleware import AuthMiddleware
     from backtest.web.routes import router
+    from backtest.web.live_routes import router as live_router
+
+    app.add_middleware(AuthMiddleware)
     app.include_router(router)
+    app.include_router(live_router)
+
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
