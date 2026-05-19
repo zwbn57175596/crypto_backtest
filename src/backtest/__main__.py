@@ -526,7 +526,7 @@ def main() -> None:
     p_opt.add_argument("--exchange", default="binance")
     p_opt.add_argument("--start", required=True, help="YYYY-MM-DD")
     p_opt.add_argument("--end", required=True, help="YYYY-MM-DD")
-    p_opt.add_argument("--balance", type=float, default=10000.0)
+    p_opt.add_argument("--balance", type=float, default=1000.0)
     p_opt.add_argument("--leverage", type=int, default=10)
     p_opt.add_argument("--margin-mode", choices=["isolated", "cross"], default="isolated", dest="margin_mode",
                        help="Margin mode (isolated=per-position, cross=account-wide)")

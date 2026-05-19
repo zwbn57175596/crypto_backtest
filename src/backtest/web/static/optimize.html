@@ -533,7 +533,7 @@ function renderHeatmap() {
 
 function getAllColumnDefs() {
   const paramNames = getParamNames();
-  const cols = [{ key: 'rank', label: 'Rank' }];
+  const cols = [{ key: 'rank', label: 'Rank' }, { key: 'id', label: 'ID' }];
   paramNames.forEach(p => cols.push({ key: 'param_' + p, label: p }));
   cols.push({ key: 'leverage', label: '杠杆倍数' });
   cols.push({ key: 'score', label: 'Score' });
@@ -558,7 +558,7 @@ function getLeverageOf(d) {
 function getVisibleCols() {
   if (visibleCols) return visibleCols;
   const paramNames = getParamNames();
-  return ['rank', ...paramNames.map(p => 'param_' + p), 'leverage', 'score', 'net_return', 'max_drawdown', 'sharpe_ratio', 'win_rate'];
+  return ['rank', 'id', ...paramNames.map(p => 'param_' + p), 'leverage', 'score', 'net_return', 'max_drawdown', 'sharpe_ratio', 'win_rate'];
 }
 
 function toggleColMenu() {
@@ -625,6 +625,7 @@ function renderTable() {
     let html = '';
     shownCols.forEach(c => {
       if (c.key === 'rank') html += `<td>${i+1}</td>`;
+      else if (c.key === 'id') html += `<td style="color:#888;font-size:12px;">${d.id}</td>`;
       else if (c.key.startsWith('param_')) html += `<td>${d.params[c.key.slice(6)]}</td>`;
       else if (c.key === 'leverage') {
         const lv = getLeverageOf(d);
