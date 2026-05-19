@@ -68,6 +68,10 @@ class LiveEngine:
         dry_run: bool = False,
         state_db: str = "data/live_state.db",
         sync_interval: int = 300,
+        max_order_notional: float | None = None,
+        max_daily_notional: float | None = None,
+        max_session_loss: float | None = None,
+        order_rate: tuple[int, int] | None = None,
     ):
         self.strategy_class = strategy_class
         self.symbol = symbol
@@ -80,6 +84,10 @@ class LiveEngine:
         self._account_id = account_id
         self._state_db = _StateDB(state_db)
         self._sync_interval = sync_interval
+        self._max_order_notional = max_order_notional
+        self._max_daily_notional = max_daily_notional
+        self._max_session_loss = max_session_loss
+        self._order_rate = order_rate
         self._stop_sync: threading.Event | None = None
 
     def run(self) -> None:
@@ -97,6 +105,10 @@ class LiveEngine:
             leverage=self.leverage,
             commission_rate=self.commission_rate,
             dry_run=self.dry_run,
+            max_order_notional=self._max_order_notional,
+            max_daily_notional=self._max_daily_notional,
+            max_session_loss=self._max_session_loss,
+            order_rate=self._order_rate,
         )
         live_exchange.sync()
 
@@ -198,6 +210,19 @@ class LiveEngine:
                   f"PnL: {pos.unrealized_pnl:.2f}")
         else:
             print("Position: flat")
+        parts = []
+        if self._max_order_notional is not None:
+            parts.append(f"max-order={self._max_order_notional:.0f}")
+        if self._max_daily_notional is not None:
+            parts.append(f"max-daily={self._max_daily_notional:.0f}")
+        if self._max_session_loss is not None:
+            parts.append(f"max-loss={self._max_session_loss:.0f}")
+        if self._order_rate is not None:
+            parts.append(f"rate={self._order_rate[0]}/{self._order_rate[1]}s")
+        if parts:
+            print(f"Risk limits: {', '.join(parts)}")
+        else:
+            print("Risk limits: none configured")
         print()
 
     def _on_exit(self, live_exchange: LiveExchange) -> None:
