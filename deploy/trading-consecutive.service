@@ -12,8 +12,9 @@ ExecStart=/home/ubuntu/crypto_backtest/.venv/bin/python -m backtest live \
     --env-file /home/ubuntu/.secrets/account1.env \
     --max-order-notional 500 --max-session-loss 300 --order-rate 10/60 \
     --log-dir /home/ubuntu/crypto_backtest/data/logs \
-    --CONSECUTIVE_THRESHOLD 8 --POSITION_MULTIPLIER 2.7 \
-    --INITIAL_POSITION_PCT 0.13 --PROFIT_CANDLE_THRESHOLD 2 --LEVERAGE 50
+    --CONSECUTIVE_THRESHOLD 8 --POSITION_MULTIPLIER 3.0 \
+    --INITIAL_POSITION_PCT 0.205 --PROFIT_CANDLE_THRESHOLD 2 \
+    --SIZE_LEVERAGE 26 --LEVERAGE 50
 Restart=always
 RestartSec=10
 
