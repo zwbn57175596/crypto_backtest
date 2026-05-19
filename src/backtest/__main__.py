@@ -422,37 +422,42 @@ def _load_env_file(path: str) -> dict[str, str]:
 def cmd_live(args: argparse.Namespace) -> None:
     import hashlib
     import os
-    from backtest.live_connector import BinanceConnector
+    from backtest.live_connector import BinanceConnector, OKXConnector
     from backtest.live_engine import LiveEngine
     from backtest.live_history import LiveHistoryDB
 
+    env: dict[str, str] = {}
     if args.env_file:
         try:
             env = _load_env_file(args.env_file)
         except FileNotFoundError:
             print(f"Error: env file not found: {args.env_file}")
             sys.exit(1)
-        api_key = env.get("BINANCE_API_KEY", "")
-        secret = env.get("BINANCE_SECRET", "")
-    else:
-        api_key = os.environ.get("BINANCE_API_KEY", "")
-        secret = os.environ.get("BINANCE_SECRET", "")
 
-    if (not api_key or not secret) and not args.dry_run:
-        print(
-            "Error: BINANCE_API_KEY and BINANCE_SECRET must be set via environment variables "
-            "or --env-file. (Not required for --dry-run)"
-        )
-        sys.exit(1)
+    # EXCHANGE in env file overrides --exchange CLI arg
+    exchange = env.get("EXCHANGE", args.exchange).lower()
 
     strategy_class = _load_strategy(args.strategy)
     if args.extra_params:
         _apply_extra_params(strategy_class, args.extra_params)
 
-    if args.exchange == "binance":
+    if exchange == "binance":
+        api_key = env.get("BINANCE_API_KEY") or os.environ.get("BINANCE_API_KEY", "")
+        secret = env.get("BINANCE_SECRET") or os.environ.get("BINANCE_SECRET", "")
+        if (not api_key or not secret) and not args.dry_run:
+            print("Error: BINANCE_API_KEY and BINANCE_SECRET must be set. (Not required for --dry-run)")
+            sys.exit(1)
         connector = BinanceConnector(api_key=api_key, secret=secret, testnet=not args.no_testnet)
+    elif exchange == "okx":
+        api_key = env.get("OKX_API_KEY") or os.environ.get("OKX_API_KEY", "")
+        secret = env.get("OKX_SECRET") or os.environ.get("OKX_SECRET", "")
+        passphrase = env.get("OKX_PASSPHRASE") or os.environ.get("OKX_PASSPHRASE", "")
+        if (not api_key or not secret or not passphrase) and not args.dry_run:
+            print("Error: OKX_API_KEY, OKX_SECRET and OKX_PASSPHRASE must be set. (Not required for --dry-run)")
+            sys.exit(1)
+        connector = OKXConnector(api_key=api_key, secret=secret, passphrase=passphrase, demo=not args.no_testnet)
     else:
-        print(f"Error: unsupported exchange: {args.exchange}")
+        print(f"Error: unsupported exchange: {exchange!r}. Supported: binance, okx")
         sys.exit(1)
 
     account_id = hashlib.sha256(api_key.encode()).hexdigest()[:16] if api_key else "dry_run"
@@ -561,7 +566,7 @@ def main() -> None:
     p_live.add_argument("--symbol", required=True)
     p_live.add_argument("--interval", required=True)
     p_live.add_argument("--leverage", type=int, required=True)
-    p_live.add_argument("--exchange", default="binance", choices=["binance"],
+    p_live.add_argument("--exchange", default="binance", choices=["binance", "okx"],
                         help="Exchange connector (default: binance)")
     p_live.add_argument("--commission-rate", type=float, default=0.0004, dest="commission_rate")
     p_live.add_argument("--no-testnet", action="store_true", default=False,

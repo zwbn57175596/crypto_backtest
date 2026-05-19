@@ -18,4 +18,4 @@ data/*.key
 
 .env
 
-.codex
+.codex.worktrees/
