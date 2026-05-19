@@ -6,7 +6,7 @@ After=network.target
 WorkingDirectory=/home/ubuntu/crypto_backtest
 EnvironmentFile=/home/ubuntu/.secrets/web.env
 ExecStart=/home/ubuntu/crypto_backtest/.venv/bin/python -m backtest web \
-    --port 8080 \
+    --port 168080 \
     --live-db /home/ubuntu/crypto_backtest/data/live_history.db \
     --log-dir /home/ubuntu/crypto_backtest/data/logs
 Restart=always
