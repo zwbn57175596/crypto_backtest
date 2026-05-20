@@ -32,7 +32,6 @@ def _run_original(start: str, end: str, **params):
         "POSITION_MULTIPLIER": params.get("multiplier", 1.1),
         "INITIAL_POSITION_PCT": params.get("initial_pct", 0.01),
         "PROFIT_CANDLE_THRESHOLD": params.get("profit_threshold", 1),
-        "SIZE_LEVERAGE": params.get("size_leverage", 50),
     }
     TrialClass = type("Trial", (StratClass,), attrs)
 
@@ -53,16 +52,13 @@ def _run_numba(start: str, end: str, **params):
         tzinfo=timezone.utc).timestamp() * 1000)
 
     bars = load_bars(DB_PATH, "BTCUSDT", "1h", "binance", start_ts, end_ts)
-    # Strategy.LEVERAGE is for sizing; engine leverage (50) is for margin
-    sizing_lev = params.get("leverage", 50)
     result = simulate(
         bars,
         threshold=params.get("threshold", 5),
         multiplier=params.get("multiplier", 1.1),
         initial_pct=params.get("initial_pct", 0.01),
         profit_threshold=params.get("profit_threshold", 1),
-        sizing_leverage=sizing_lev,
-        exchange_leverage=50,  # engine always uses 50
+        leverage=50,
         commission_rate=0.0004,
         funding_rate=0.0001,
         maintenance_margin=0.005,
@@ -116,7 +112,7 @@ class TestNumbaMatchesEngine:
 
     def test_empty_bars(self):
         bars = np.empty((0, 6), dtype=np.float64)
-        result = simulate(bars, 5, 1.1, 0.01, 1, 50, 50, 0.0004, 0.0001, 0.005, 1000.0)
+        result = simulate(bars, 5, 1.1, 0.01, 1, 50, 0.0004, 0.0001, 0.005, 1000.0)
         assert result[0] == 0.0  # net_return
         assert result[7] == 0    # total_trades
 
@@ -130,7 +126,7 @@ class TestNumbaMatchesEngine:
             bars[i, 2] = 40100.0
             bars[i, 3] = 39900.0
             bars[i, 5] = 1000.0
-        result = simulate(bars, 5, 1.1, 0.01, 1, 50, 50, 0.0004, 0.0001, 0.005, 1000.0)
+        result = simulate(bars, 5, 1.1, 0.01, 1, 50, 0.0004, 0.0001, 0.005, 1000.0)
         assert result[7] == 0  # no trades
 
     def test_high_leverage_liquidation(self):
@@ -148,7 +144,7 @@ class TestNumbaMatchesEngine:
             bars[i, 3] = min(bars[i, 1], bars[i, 4]) - 50
             bars[i, 5] = 1000.0
 
-        result = simulate(bars, 5, 1.5, 0.05, 3, 200, 50, 0.0004, 0.0001, 0.005, 1000.0)
+        result = simulate(bars, 5, 1.5, 0.05, 3, 200, 0.0004, 0.0001, 0.005, 1000.0)
         # Should have some trades and potentially liquidation
         assert result[7] > 0
         # High leverage + adverse move = likely loss
@@ -175,11 +171,11 @@ class TestNumbaBenchmark:
         end_ts = int(datetime(2024, 7, 1, tzinfo=timezone.utc).timestamp() * 1000)
         bars = load_bars(DB_PATH, "BTCUSDT", "1h", "binance", start_ts, end_ts)
         # Warm up
-        simulate(bars, 5, 1.1, 0.01, 1, 50, 50, 0.0004, 0.0001, 0.005, 1000.0)
+        simulate(bars, 5, 1.1, 0.01, 1, 50, 0.0004, 0.0001, 0.005, 1000.0)
 
         t0 = time.perf_counter()
         for _ in range(100):
-            simulate(bars, 5, 1.1, 0.01, 1, 50, 50, 0.0004, 0.0001, 0.005, 1000.0)
+            simulate(bars, 5, 1.1, 0.01, 1, 50, 0.0004, 0.0001, 0.005, 1000.0)
         t_numba = (time.perf_counter() - t0) / 100
 
         speedup = t_orig / t_numba

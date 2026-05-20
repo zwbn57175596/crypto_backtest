@@ -147,8 +147,7 @@ def simulate_martingale(
     multiplier: float,
     initial_pct: float,
     profit_threshold: int,
-    sizing_leverage: int,
-    exchange_leverage: int,
+    leverage: int,
     commission_rate: float,
     funding_rate: float,
     maintenance_margin: float,
@@ -163,8 +162,7 @@ def simulate_martingale(
     multiplier : POSITION_MULTIPLIER
     initial_pct : INITIAL_POSITION_PCT
     profit_threshold : PROFIT_CANDLE_THRESHOLD
-    sizing_leverage : Strategy LEVERAGE (for position sizing in _calc_quantity)
-    exchange_leverage : SimExchange leverage (for margin = qty / leverage)
+    leverage : Exchange leverage (for margin = qty / leverage)
     commission_rate : e.g. 0.0004
     funding_rate : e.g. 0.0001
     maintenance_margin : e.g. 0.5
@@ -242,7 +240,7 @@ def simulate_martingale(
              total_trades, wins, losses, total_profit, total_loss) = _fill_order(
                 pend_side_0, pend_qty_0, open_price,
                 balance, pos_side, pos_qty, pos_entry, pos_margin,
-                exchange_leverage, commission_rate,
+                leverage, commission_rate,
                 total_trades, wins, losses, total_profit, total_loss)
 
         if n_pending >= 2:
@@ -250,7 +248,7 @@ def simulate_martingale(
              total_trades, wins, losses, total_profit, total_loss) = _fill_order(
                 pend_side_1, pend_qty_1, open_price,
                 balance, pos_side, pos_qty, pos_entry, pos_margin,
-                exchange_leverage, commission_rate,
+                leverage, commission_rate,
                 total_trades, wins, losses, total_profit, total_loss)
 
         # Clear pending
@@ -329,7 +327,7 @@ def simulate_martingale(
             profit_candle_count = 0  # reset stale count from external close (e.g. liquidation)
             # Try open
             qty = _calc_quantity(
-                consecutive_count, threshold, balance, initial_pct, multiplier, sizing_leverage
+                consecutive_count, threshold, balance, initial_pct, multiplier
             )
             if qty > 0:
                 if direction == 1:
@@ -359,7 +357,7 @@ def simulate_martingale(
                     # Use current balance for sizing (matches original: strategy
                     # reads self.balance which hasn't changed yet since order is pending)
                     reopen_qty = _calc_quantity(
-                        consecutive_count, threshold, balance, initial_pct, multiplier, sizing_leverage
+                        consecutive_count, threshold, balance, initial_pct, multiplier
                     )
                     if reopen_qty > 0:
                         if direction == 1:
@@ -372,7 +370,7 @@ def simulate_martingale(
                 # Loss candle - add to contrarian position up to current target size
                 profit_candle_count = 0
                 target_qty = _calc_quantity(
-                    consecutive_count, threshold, balance, initial_pct, multiplier, sizing_leverage
+                    consecutive_count, threshold, balance, initial_pct, multiplier
                 )
                 add_qty = target_qty - pos_qty
                 if add_qty > 0:
@@ -450,8 +448,7 @@ def simulate_close_reopen(
     multiplier: float,
     initial_pct: float,
     profit_threshold: int,
-    sizing_leverage: int,
-    exchange_leverage: int,
+    leverage: int,
     commission_rate: float,
     funding_rate: float,
     maintenance_margin: float,
@@ -537,7 +534,7 @@ def simulate_close_reopen(
              total_trades, wins, losses, total_profit, total_loss) = _fill_order(
                 pend_side_0, pend_qty_0, open_price,
                 balance, pos_side, pos_qty, pos_entry, pos_margin,
-                exchange_leverage, commission_rate,
+                leverage, commission_rate,
                 total_trades, wins, losses, total_profit, total_loss)
 
         if n_pending >= 2:
@@ -545,7 +542,7 @@ def simulate_close_reopen(
              total_trades, wins, losses, total_profit, total_loss) = _fill_order(
                 pend_side_1, pend_qty_1, open_price,
                 balance, pos_side, pos_qty, pos_entry, pos_margin,
-                exchange_leverage, commission_rate,
+                leverage, commission_rate,
                 total_trades, wins, losses, total_profit, total_loss)
 
         # Clear pending
@@ -624,7 +621,7 @@ def simulate_close_reopen(
             profit_candle_count = 0  # reset stale count from external close (e.g. liquidation)
             # Try open
             qty = _calc_quantity(
-                consecutive_count, threshold, balance, initial_pct, multiplier, sizing_leverage
+                consecutive_count, threshold, balance, initial_pct, multiplier
             )
             if qty > 0:
                 if direction == 1:
@@ -652,7 +649,7 @@ def simulate_close_reopen(
 
                     # Try reopen
                     reopen_qty = _calc_quantity(
-                        consecutive_count, threshold, balance, initial_pct, multiplier, sizing_leverage
+                        consecutive_count, threshold, balance, initial_pct, multiplier
                     )
                     if reopen_qty > 0:
                         if direction == 1:
@@ -673,7 +670,7 @@ def simulate_close_reopen(
 
                 # Try reopen contrarian
                 reopen_qty = _calc_quantity(
-                    consecutive_count, threshold, balance, initial_pct, multiplier, sizing_leverage
+                    consecutive_count, threshold, balance, initial_pct, multiplier
                 )
                 if reopen_qty > 0:
                     if direction == 1:
@@ -754,7 +751,6 @@ def _calc_quantity(
     balance: float,
     initial_pct: float,
     multiplier: float,
-    leverage: int,
 ) -> float:
     """Calculate position quantity (USDT notional)."""
     if consecutive_count < threshold:
@@ -762,4 +758,4 @@ def _calc_quantity(
     base = balance * initial_pct
     n = consecutive_count - threshold + 1
     mult = multiplier ** (n - 1)
-    return base * mult * leverage
+    return base * mult
