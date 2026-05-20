@@ -37,6 +37,8 @@ Consecutive Reverse Strategy - 连续K线反转策略（平仓-重开版本）
         --method cuda-grid --objective sharpe_ratio
 """
 
+import datetime
+
 from backtest.strategy import BaseStrategy
 from backtest.models import Bar, Position
 
@@ -55,13 +57,16 @@ class ConsecutiveReverseStrategy(BaseStrategy):
         self._consecutive_count = 0
         self._streak_direction = 0  # +1 up, -1 down, 0 none
         self._profit_candle_count = 0
+        self._current_bar: Bar | None = None
 
     def on_bar(self, bar: Bar) -> None:
         direction = self._get_direction(bar)
         if direction == 0:
             return  # skip doji
 
+        self._current_bar = bar
         self._update_streak(direction)
+        self._log_snapshot(bar)
 
         pos = self.position
         if pos is None:
@@ -70,11 +75,13 @@ class ConsecutiveReverseStrategy(BaseStrategy):
         elif self._is_profit_candle(pos, direction):
             self._profit_candle_count += 1
             if self._profit_candle_count >= self.PROFIT_CANDLE_THRESHOLD:
+                self._log_close(bar, pos, reason=f"盈利K线={self._profit_candle_count}")
                 self.close()
                 self._profit_candle_count = 0
                 self._try_open(direction)
         else:
             # Loss candle - close immediately
+            self._log_close(bar, pos, reason="亏损K线")
             self.close()
             self._profit_candle_count = 0
             self._try_open(direction)
@@ -109,10 +116,15 @@ class ConsecutiveReverseStrategy(BaseStrategy):
         quantity = self._calc_quantity()
         if quantity <= 0:
             return
+        bar = self._current_bar
+        t = self._fmt_time(bar.timestamp) if bar else "??:??"
+        dir_arrow = "↑" if self._streak_direction == 1 else "↓"
         # 反向开仓：连涨做空，连跌做多
         if direction == 1:
+            print(f"[开仓] {t} SHORT qty≈{quantity:.2f} 连续={self._consecutive_count}{dir_arrow} price≈{bar.close:.2f}")
             self.sell(quantity)
         else:
+            print(f"[开仓] {t} LONG  qty≈{quantity:.2f} 连续={self._consecutive_count}{dir_arrow} price≈{bar.close:.2f}")
             self.buy(quantity)
 
     def _is_profit_candle(self, pos: Position, direction: int) -> bool:
@@ -122,6 +134,29 @@ class ConsecutiveReverseStrategy(BaseStrategy):
         if pos.side == "short" and direction == -1:
             return True
         return False
+
+    # ==================== 日志辅助 ====================
+
+    def _fmt_time(self, ts_ms: int) -> str:
+        return datetime.datetime.fromtimestamp(ts_ms / 1000).strftime("%H:%M:%S")
+
+    def _log_snapshot(self, bar: Bar) -> None:
+        t = self._fmt_time(bar.timestamp)
+        dir_arrow = "↑" if self._streak_direction == 1 else ("↓" if self._streak_direction == -1 else "-")
+        print(f"[账户][余额] {t} balance≈{self.balance:.2f} equity≈{self.equity:.2f} 连续={self._consecutive_count}{dir_arrow} price={bar.close:.2f}")
+        pos = self.position
+        if pos is not None:
+            side_str = "LONG " if pos.side == "long" else "SHORT"
+            pnl = pos.unrealized_pnl
+            pnl_str = f"+{pnl:.2f}" if pnl >= 0 else f"{pnl:.2f}"
+            print(f"[持仓快照] {t} side={side_str} qty≈{pos.quantity:.2f} entry≈{pos.entry_price:.2f} uPnL={pnl_str} margin≈{pos.margin:.2f} profit_count={self._profit_candle_count}")
+
+    def _log_close(self, bar: Bar, pos: Position, reason: str) -> None:
+        t = self._fmt_time(bar.timestamp)
+        pnl = pos.unrealized_pnl
+        pnl_str = f"+{pnl:.2f}" if pnl >= 0 else f"{pnl:.2f}"
+        side_str = "LONG " if pos.side == "long" else "SHORT"
+        print(f"[平仓] {t} side={side_str} reason={reason} uPnL={pnl_str} qty≈{pos.quantity:.2f} entry≈{pos.entry_price:.2f} close={bar.close:.2f}")
 
     def save_state(self) -> dict:
         return {
