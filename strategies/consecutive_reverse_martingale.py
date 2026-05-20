@@ -45,7 +45,7 @@ Consecutive Reverse Martingale Strategy - 连续K线反转策略（Martingale加
         --symbol BTCUSDT --interval 1h \
         --start 2020-01-01 --end 2026-03-30 \
         --balance 1000 --leverage 50 \
-        --params "CONSECUTIVE_THRESHOLD=3:8:1,POSITION_MULTIPLIER=0.1:3.0:0.1,INITIAL_POSITION_PCT=0.005:0.3:0.005,PROFIT_CANDLE_THRESHOLD=1:5:1,SIZE_LEVERAGE=2:50:2" \
+        --params "CONSECUTIVE_THRESHOLD=3:8:1,POSITION_MULTIPLIER=0.1:3.0:0.1,INITIAL_POSITION_PCT=0.1:1.5:0.05,PROFIT_CANDLE_THRESHOLD=1:5:1" \
         --method cuda-grid --objective sharpe_ratio
 """
 
@@ -59,26 +59,23 @@ class ConsecutiveReverseMartingaleStrategy(BaseStrategy):
     # ==================== 可优化参数 ====================
     CONSECUTIVE_THRESHOLD = 5       # 连续K线触发阈值
     POSITION_MULTIPLIER = 1.1       # 仓位递增倍数
-    INITIAL_POSITION_PCT = 0.01     # 初始仓位比例（占余额）
+    INITIAL_POSITION_PCT = 0.50     # 初始仓位比例（占余额）
     PROFIT_CANDLE_THRESHOLD = 1     # 盈利K线平仓阈值
-    SIZE_LEVERAGE = 50              # 仓位倍数（position sizing multiplier）
 
     # ==================== 内置搜索空间 ====================
     OPTIMIZE_SPACE = {
         "CONSECUTIVE_THRESHOLD": (2, 8, 1),
         "POSITION_MULTIPLIER": (1.0, 1.5, 0.1),
-        "INITIAL_POSITION_PCT": (0.005, 0.03, 0.005),
+        "INITIAL_POSITION_PCT": (0.1, 1.5, 0.05),
         "PROFIT_CANDLE_THRESHOLD": (1, 10, 1),
-        "SIZE_LEVERAGE": (1, 50, 3),
     }
     AUTO_OPTIMIZE_CONFIG = {
         "refine_top_k": 8,
         "refine_space": {
             "CONSECUTIVE_THRESHOLD": {"radius": 1, "step": 1},
             "POSITION_MULTIPLIER": {"radius": 0.1, "step": 0.05},
-            "INITIAL_POSITION_PCT": {"radius": 0.005, "step": 0.0025, "min": 0.0025, "max": 0.04},
+            "INITIAL_POSITION_PCT": {"radius": 0.1, "step": 0.025, "min": 0.05, "max": 2.0},
             "PROFIT_CANDLE_THRESHOLD": {"radius": 1, "step": 1},
-            "SIZE_LEVERAGE": {"radius": 3, "step": 1},
         },
     }
 
@@ -132,7 +129,7 @@ class ConsecutiveReverseMartingaleStrategy(BaseStrategy):
         base = self.balance * self.INITIAL_POSITION_PCT
         n = self._consecutive_count - self.CONSECUTIVE_THRESHOLD + 1
         multiplier = self.POSITION_MULTIPLIER ** (n - 1)
-        return base * multiplier * self.SIZE_LEVERAGE
+        return base * multiplier
 
     def _try_open(self, direction: int) -> None:
         """尝试反向开仓"""
