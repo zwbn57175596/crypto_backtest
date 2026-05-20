@@ -35,8 +35,8 @@ if HAS_CUDA:
         ----------
         bars : float64[:, 6]
             [timestamp_ms, open, high, low, close, volume]
-        params : float64[:, 5]
-            [threshold, multiplier, initial_pct, profit_threshold, sizing_leverage]
+        params : float64[:, 4]
+            [threshold, multiplier, initial_pct, profit_threshold]
             for each combination
         results : float64[:, 8]
             Output metrics [net_return, annual_return, max_drawdown, sharpe,
@@ -77,7 +77,6 @@ if HAS_CUDA:
         multiplier = params[idx, 1]
         initial_pct = params[idx, 2]
         profit_threshold = int(params[idx, 3])
-        sizing_leverage = int(params[idx, 4])
 
         # Exchange state
         balance = initial_balance
@@ -233,7 +232,7 @@ if HAS_CUDA:
                 profit_candle_count = 0  # reset stale count
                 # Try open
                 qty = device_calc_quantity(
-                    consecutive_count, threshold, balance, initial_pct, multiplier, sizing_leverage
+                    consecutive_count, threshold, balance, initial_pct, multiplier
                 )
                 if qty > 0:
                     if direction == 1:
@@ -261,7 +260,7 @@ if HAS_CUDA:
 
                         # Try reopen
                         reopen_qty = device_calc_quantity(
-                            consecutive_count, threshold, balance, initial_pct, multiplier, sizing_leverage
+                            consecutive_count, threshold, balance, initial_pct, multiplier
                         )
                         if reopen_qty > 0:
                             if direction == 1:
@@ -274,7 +273,7 @@ if HAS_CUDA:
                     # Loss candle - add to contrarian position up to current target size (martingale)
                     profit_candle_count = 0
                     target_qty = device_calc_quantity(
-                        consecutive_count, threshold, balance, initial_pct, multiplier, sizing_leverage
+                        consecutive_count, threshold, balance, initial_pct, multiplier
                     )
                     add_qty = target_qty - pos_qty
                     if add_qty > 0:
@@ -377,7 +376,6 @@ if HAS_CUDA:
         multiplier = params[idx, 1]
         initial_pct = params[idx, 2]
         profit_threshold = int(params[idx, 3])
-        sizing_leverage = int(params[idx, 4])
 
         balance = initial_balance
         pos_side = NO_POS
@@ -521,7 +519,7 @@ if HAS_CUDA:
             if pos_side == NO_POS:
                 profit_candle_count = 0
                 qty = device_calc_quantity(
-                    consecutive_count, threshold, balance, initial_pct, multiplier, sizing_leverage
+                    consecutive_count, threshold, balance, initial_pct, multiplier
                 )
                 if qty > 0:
                     if direction == 1:
@@ -548,7 +546,7 @@ if HAS_CUDA:
 
                         # Try reopen contrarian
                         reopen_qty = device_calc_quantity(
-                            consecutive_count, threshold, balance, initial_pct, multiplier, sizing_leverage
+                            consecutive_count, threshold, balance, initial_pct, multiplier
                         )
                         if reopen_qty > 0:
                             if direction == 1:
@@ -568,7 +566,7 @@ if HAS_CUDA:
                     n_pending = 1
 
                     reopen_qty = device_calc_quantity(
-                        consecutive_count, threshold, balance, initial_pct, multiplier, sizing_leverage
+                        consecutive_count, threshold, balance, initial_pct, multiplier
                     )
                     if reopen_qty > 0:
                         if direction == 1:

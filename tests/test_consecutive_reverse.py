@@ -12,13 +12,13 @@ _PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 
-def test_size_leverage_attr_exists():
+def test_no_size_leverage_attr():
     from strategies.consecutive_reverse import ConsecutiveReverseStrategy
-    assert hasattr(ConsecutiveReverseStrategy, "SIZE_LEVERAGE")
+    assert not hasattr(ConsecutiveReverseStrategy, "SIZE_LEVERAGE")
     assert not hasattr(ConsecutiveReverseStrategy, "LEVERAGE")
 
 
-def test_calc_quantity_uses_size_leverage():
+def test_calc_quantity_uses_initial_pct_only():
     from strategies.consecutive_reverse import ConsecutiveReverseStrategy
     from backtest.exchange import SimExchange
     exchange = SimExchange(balance=1000.0, leverage=50,
@@ -26,12 +26,11 @@ def test_calc_quantity_uses_size_leverage():
                            maintenance_margin=0.005)
     strategy = ConsecutiveReverseStrategy(exchange=exchange, symbol="BTCUSDT")
     strategy.on_init()
-    strategy.SIZE_LEVERAGE = 10
-    strategy.INITIAL_POSITION_PCT = 0.01
+    strategy.INITIAL_POSITION_PCT = 0.10
     strategy.CONSECUTIVE_THRESHOLD = 3
     strategy.POSITION_MULTIPLIER = 1.0
     strategy._consecutive_count = 3
-    # base = 1000 * 0.01 = 10, n=1, mult=1.0^0=1, qty = 10 * 1 * 10 = 100
+    # base = 1000 * 0.10 = 100, n=1, mult=1.0, qty = 100
     assert strategy._calc_quantity() == pytest.approx(100.0)
 
 
@@ -98,28 +97,28 @@ class TestStreakTracking:
 
 class TestPositionSizing:
     def test_below_threshold_returns_zero(self):
-        strategy, _ = create_strategy()
+        strategy, _ = create_strategy({"CONSECUTIVE_THRESHOLD": 5, "INITIAL_POSITION_PCT": 0.10, "POSITION_MULTIPLIER": 1.1})
         strategy._consecutive_count = 4
         assert strategy._calc_quantity() == 0
 
     def test_at_threshold_returns_base_size(self):
-        strategy, _ = create_strategy()
+        strategy, _ = create_strategy({"CONSECUTIVE_THRESHOLD": 5, "INITIAL_POSITION_PCT": 0.10, "POSITION_MULTIPLIER": 1.1})
         strategy._consecutive_count = 5
-        # base = 1000 * 0.01 = 10, multiplier = 1.1^0 = 1, qty = 10 * 50 = 500
-        assert strategy._calc_quantity() == pytest.approx(500.0)
+        # base = 1000 * 0.10 = 100, n=1, multiplier = 1.1^0 = 1, qty = 100
+        assert strategy._calc_quantity() == pytest.approx(100.0)
 
     def test_above_threshold_applies_multiplier(self):
-        strategy, _ = create_strategy()
+        strategy, _ = create_strategy({"CONSECUTIVE_THRESHOLD": 5, "INITIAL_POSITION_PCT": 0.10, "POSITION_MULTIPLIER": 1.1})
         strategy._consecutive_count = 7
-        # base = 10, n = 3, multiplier = 1.1^2 = 1.21, qty = 10 * 1.21 * 50 = 605
-        assert strategy._calc_quantity() == pytest.approx(605.0)
+        # base = 100, n = 3, multiplier = 1.1^2 = 1.21, qty = 100 * 1.21 = 121
+        assert strategy._calc_quantity() == pytest.approx(121.0)
 
 
 class TestOpenPosition:
     def test_opens_short_after_consecutive_up(self):
         """5 consecutive up candles should trigger a short position."""
         # Use smaller leverage to avoid liquidation from small price moves
-        strategy, exchange = create_strategy(leverage=10)
+        strategy, exchange = create_strategy({"CONSECUTIVE_THRESHOLD": 5}, leverage=10)
         for i in range(5):
             bar = make_bar(open_=100 + i, close=105 + i, ts=1000 + i * 3600000)
             exchange.on_new_bar(bar)
@@ -136,7 +135,7 @@ class TestOpenPosition:
     def test_opens_long_after_consecutive_down(self):
         """5 consecutive down candles should trigger a long position."""
         # Use smaller leverage to avoid liquidation from small price moves
-        strategy, exchange = create_strategy(leverage=10)
+        strategy, exchange = create_strategy({"CONSECUTIVE_THRESHOLD": 5}, leverage=10)
         for i in range(5):
             bar = make_bar(open_=200 - i, close=195 - i, ts=1000 + i * 3600000)
             exchange.on_new_bar(bar)
@@ -151,8 +150,8 @@ class TestOpenPosition:
         assert pos.side == "long"
 
     def test_no_open_below_threshold(self):
-        """4 consecutive candles should NOT trigger opening."""
-        strategy, exchange = create_strategy()
+        """4 consecutive candles should NOT trigger opening with threshold=5."""
+        strategy, exchange = create_strategy({"CONSECUTIVE_THRESHOLD": 5})
         for i in range(4):
             bar = make_bar(open_=100 + i, close=105 + i, ts=1000 + i * 3600000)
             exchange.on_new_bar(bar)
@@ -168,7 +167,7 @@ class TestOpenPosition:
 class TestClosePosition:
     def test_close_on_profit_candle(self):
         """With threshold=1, one profit candle should trigger close."""
-        strategy, exchange = create_strategy({"PROFIT_CANDLE_THRESHOLD": 1})
+        strategy, exchange = create_strategy({"CONSECUTIVE_THRESHOLD": 5, "PROFIT_CANDLE_THRESHOLD": 1})
         # Open short: 5 up candles
         for i in range(5):
             bar = make_bar(open_=100, close=105, ts=1000 + i * 3600000)
@@ -197,7 +196,7 @@ class TestClosePosition:
 
     def test_profit_candle_threshold_3(self):
         """With threshold=3, need 3 consecutive profit candles."""
-        strategy, exchange = create_strategy({"PROFIT_CANDLE_THRESHOLD": 3})
+        strategy, exchange = create_strategy({"CONSECUTIVE_THRESHOLD": 5, "PROFIT_CANDLE_THRESHOLD": 3})
         # Open short: 5 up candles
         for i in range(5):
             bar = make_bar(open_=100, close=105, ts=1000 + i * 3600000)
@@ -220,7 +219,7 @@ class TestClosePosition:
 
     def test_close_on_loss_candle(self):
         """Loss candle should close immediately."""
-        strategy, exchange = create_strategy()
+        strategy, exchange = create_strategy({"CONSECUTIVE_THRESHOLD": 5})
         # Open short: 5 up candles
         for i in range(5):
             bar = make_bar(open_=100, close=105, ts=1000 + i * 3600000)
@@ -269,7 +268,7 @@ class TestOptimizerCompatibility:
 
     def test_full_backtest_sequence(self):
         """Run a short sequence and verify trades produced."""
-        strategy, exchange = create_strategy()
+        strategy, exchange = create_strategy({"CONSECUTIVE_THRESHOLD": 5})
 
         bars = []
         for i in range(5):

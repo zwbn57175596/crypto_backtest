@@ -153,43 +153,20 @@ if HAS_CUDA:
         balance,
         initial_pct,
         multiplier,
-        leverage,
     ):
         """Calculate position quantity (USDT notional).
 
         This is a CUDA device function (runs on GPU). Logic is identical to
         numba_simulate._calc_quantity.
-
-        Parameters
-        ----------
-        consecutive_count : int
-            Number of consecutive bars in the same direction
-        threshold : int
-            Minimum consecutive bars to trigger position opening
-        balance : float
-            Current account balance in USDT
-        initial_pct : float
-            Initial position size as a percentage of balance
-        multiplier : float
-            Multiplier for exponential position sizing
-        leverage : int
-            Leverage for position sizing
-
-        Returns
-        -------
-        float
-            Position quantity in USDT notional (0 if threshold not met)
         """
         if consecutive_count < threshold:
             return 0.0
         base = balance * initial_pct
         n = consecutive_count - threshold + 1
-        # Use a simple loop to compute multiplier ** (n - 1)
-        # since Numba/CUDA may not support ** for device functions
         mult = 1.0
         for _ in range(n - 1):
             mult *= multiplier
-        return base * mult * leverage
+        return base * mult
 
 else:
     # Stubs for when CUDA is not available
