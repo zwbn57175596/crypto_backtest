@@ -89,7 +89,7 @@ class TestStrategyOptimizeSpace:
         combos = space.grid()
         assert len(combos) > 0
         assert combos[0]["CONSECUTIVE_THRESHOLD"] == 2
-        assert "SIZE_LEVERAGE" in combos[0]
+        assert "SIZE_LEVERAGE" not in combos[0]
         assert "LEVERAGE" not in combos[0]
 
 
@@ -458,10 +458,10 @@ class TestLoadOptimizeResult:
         from backtest.optimizer import save_results, OptimizeResult
         db = str(tmp_path / "r.db")
         result = OptimizeResult(
-            best_params={"SIZE_LEVERAGE": 26},
+            best_params={"CONSECUTIVE_THRESHOLD": 8},
             best_score=0.88,
             all_trials=[{
-                "params": {"SIZE_LEVERAGE": 26, "CONSECUTIVE_THRESHOLD": 8},
+                "params": {"CONSECUTIVE_THRESHOLD": 8},
                 "score": 0.88,
                 "report": {"net_return": 1.0, "sharpe_ratio": 0.88,
                            "max_drawdown": 0.5, "win_rate": 0.5,
@@ -488,7 +488,7 @@ class TestLoadOptimizeResult:
         assert loaded["end"] == "2026-03-30"
         assert loaded["leverage"] == 50
         assert loaded["exchange"] == "okx"
-        assert loaded["params"]["SIZE_LEVERAGE"] == 26
+        assert loaded["params"]["CONSECUTIVE_THRESHOLD"] == 8
 
     def test_not_found_raises(self, tmp_path):
         import sqlite3
@@ -709,10 +709,10 @@ class TestSaveResultsColumns:
         from backtest.optimizer import save_results, OptimizeResult
         db = str(tmp_path / "test.db")
         result = OptimizeResult(
-            best_params={"SIZE_LEVERAGE": 10},
+            best_params={"CONSECUTIVE_THRESHOLD": 5},
             best_score=0.5,
             all_trials=[{
-                "params": {"SIZE_LEVERAGE": 10},
+                "params": {"CONSECUTIVE_THRESHOLD": 5},
                 "score": 0.5,
                 "report": {"net_return": 0.1, "sharpe_ratio": 0.5,
                            "max_drawdown": 0.2, "win_rate": 0.5,

@@ -438,7 +438,7 @@ def _numba_worker(args: tuple) -> dict:
     """Worker function for NumbaGridOptimizer multiprocessing."""
     from backtest.numba_simulate import simulate_martingale, simulate_close_reopen
 
-    bars, params, sizing_leverage, exchange_leverage, commission_rate, \
+    bars, params, leverage, commission_rate, \
         funding_rate, maintenance_margin, initial_balance, objective, is_martingale = args
 
     simulate_fn = simulate_martingale if is_martingale else simulate_close_reopen
@@ -449,8 +449,7 @@ def _numba_worker(args: tuple) -> dict:
         multiplier=float(params.get("POSITION_MULTIPLIER", 1.1)),
         initial_pct=float(params.get("INITIAL_POSITION_PCT", 0.01)),
         profit_threshold=int(params.get("PROFIT_CANDLE_THRESHOLD", 1)),
-        sizing_leverage=sizing_leverage,
-        exchange_leverage=exchange_leverage,
+        leverage=leverage,
         commission_rate=commission_rate,
         funding_rate=funding_rate,
         maintenance_margin=maintenance_margin,
@@ -491,7 +490,7 @@ def _numba_worker_shared(args: tuple) -> dict:
     global _shared_bars
     from backtest.numba_simulate import simulate_martingale, simulate_close_reopen
 
-    params, sizing_leverage, exchange_leverage, commission_rate, \
+    params, leverage, commission_rate, \
         funding_rate, maintenance_margin, initial_balance, objective, is_martingale = args
 
     simulate_fn = simulate_martingale if is_martingale else simulate_close_reopen
@@ -502,8 +501,7 @@ def _numba_worker_shared(args: tuple) -> dict:
         multiplier=float(params.get("POSITION_MULTIPLIER", 1.1)),
         initial_pct=float(params.get("INITIAL_POSITION_PCT", 0.01)),
         profit_threshold=int(params.get("PROFIT_CANDLE_THRESHOLD", 1)),
-        sizing_leverage=sizing_leverage,
-        exchange_leverage=exchange_leverage,
+        leverage=leverage,
         commission_rate=commission_rate,
         funding_rate=funding_rate,
         maintenance_margin=maintenance_margin,
@@ -599,7 +597,7 @@ class NumbaGridOptimizer:
         print(f"Loaded {bars.shape[0]} bars, warming up JIT...", flush=True)
 
         # Warm up JIT compilation
-        simulate_fn(bars[:10], 5, 1.1, 0.01, 1, 50, 50, 0.0004, 0.0001, 0.005, 1000.0)
+        simulate_fn(bars[:10], 5, 1.1, 0.01, 1, 50, 0.0004, 0.0001, 0.005, 1000.0)
 
         combos = self.param_space.grid()
         total = len(combos)
@@ -611,7 +609,6 @@ class NumbaGridOptimizer:
                 "POSITION_MULTIPLIER",
                 "INITIAL_POSITION_PCT",
                 "PROFIT_CANDLE_THRESHOLD",
-                "SIZE_LEVERAGE",
             ],
         )
 
@@ -619,15 +616,13 @@ class NumbaGridOptimizer:
             # Single process - fastest for small grids
             results = []
             for i, params in enumerate(combos, 1):
-                sizing_lev = int(params.get("SIZE_LEVERAGE", default_params.get("SIZE_LEVERAGE", self.leverage)))
                 result = simulate_fn(
                     bars,
                     threshold=int(params.get("CONSECUTIVE_THRESHOLD", default_params.get("CONSECUTIVE_THRESHOLD", 5))),
                     multiplier=float(params.get("POSITION_MULTIPLIER", default_params.get("POSITION_MULTIPLIER", 1.1))),
                     initial_pct=float(params.get("INITIAL_POSITION_PCT", default_params.get("INITIAL_POSITION_PCT", 0.01))),
                     profit_threshold=int(params.get("PROFIT_CANDLE_THRESHOLD", default_params.get("PROFIT_CANDLE_THRESHOLD", 1))),
-                    sizing_leverage=sizing_lev,
-                    exchange_leverage=self.leverage,
+                    leverage=self.leverage,
                     commission_rate=self.commission_rate,
                     funding_rate=self.funding_rate,
                     maintenance_margin=self.maintenance_margin,
@@ -650,7 +645,6 @@ class NumbaGridOptimizer:
             trial_args = [
                 (
                     params,
-                    int(params.get("SIZE_LEVERAGE", default_params.get("SIZE_LEVERAGE", self.leverage))),
                     self.leverage,
                     self.commission_rate,
                     self.funding_rate,
