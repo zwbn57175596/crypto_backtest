@@ -67,10 +67,6 @@ def _apply_optimize_params(strategy_class: type, params: dict) -> None:
     """Apply params dict from optimize_results to strategy class attributes."""
     for key, value in params.items():
         attr = key
-        # backward compat: old DB records use "LEVERAGE"; new strategies use "SIZE_LEVERAGE"
-        if key == "LEVERAGE" and not hasattr(strategy_class, "LEVERAGE") \
-                and hasattr(strategy_class, "SIZE_LEVERAGE"):
-            attr = "SIZE_LEVERAGE"
         if not hasattr(strategy_class, attr):
             continue
         try:
@@ -177,10 +173,6 @@ def cmd_run(args: argparse.Namespace, extra_args: list[str] | None = None) -> No
         _apply_optimize_params(strategy_class, optimize_params)
     if extra_args:
         _apply_extra_params(strategy_class, extra_args)
-    if args.sizing_leverage is not None:
-        attr = "SIZE_LEVERAGE" if hasattr(strategy_class, "SIZE_LEVERAGE") else "LEVERAGE"
-        setattr(strategy_class, attr, args.sizing_leverage)
-        print(f"  [param] {attr} = {args.sizing_leverage}")
     db_path = args.db or str(Path("data") / "klines.db")
 
     engine = BacktestEngine(
@@ -533,8 +525,6 @@ def main() -> None:
                        help="Exchange leverage (for margin & liquidation)")
     p_run.add_argument("--margin-mode", choices=["isolated", "cross"], default=None, dest="margin_mode",
                        help="Margin mode (isolated=per-position, cross=account-wide)")
-    p_run.add_argument("--sizing-leverage", type=int, default=None, dest="sizing_leverage",
-                       help="Strategy sizing leverage (sets LEVERAGE class attr, used in _calc_quantity)")
     p_run.add_argument("--db", default=None)
 
     p_web = sub.add_parser("web", help="Start web report viewer")

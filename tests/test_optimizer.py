@@ -513,20 +513,20 @@ class TestApplyOptimizeParams:
         class TrialClass(ConsecutiveReverseStrategy):
             pass
 
-        _apply_optimize_params(TrialClass, {"SIZE_LEVERAGE": 26, "CONSECUTIVE_THRESHOLD": 8})
-        assert TrialClass.SIZE_LEVERAGE == 26
+        _apply_optimize_params(TrialClass, {"CONSECUTIVE_THRESHOLD": 8, "INITIAL_POSITION_PCT": 1.5})
         assert TrialClass.CONSECUTIVE_THRESHOLD == 8
+        assert TrialClass.INITIAL_POSITION_PCT == 1.5
 
-    def test_legacy_leverage_key_maps_to_size_leverage(self):
+    def test_unknown_key_is_ignored(self):
         from backtest.__main__ import _apply_optimize_params
         from strategies.consecutive_reverse import ConsecutiveReverseStrategy
 
         class TrialClass(ConsecutiveReverseStrategy):
             pass
 
-        # Old DB record with "LEVERAGE" key — should map to SIZE_LEVERAGE
-        _apply_optimize_params(TrialClass, {"LEVERAGE": 26})
-        assert TrialClass.SIZE_LEVERAGE == 26
+        # Old DB records with SIZE_LEVERAGE or unknown keys should be silently skipped
+        _apply_optimize_params(TrialClass, {"SIZE_LEVERAGE": 26})
+        assert not hasattr(TrialClass, "SIZE_LEVERAGE")
 
     def test_ignores_unknown_attrs(self):
         from backtest.__main__ import _apply_optimize_params
