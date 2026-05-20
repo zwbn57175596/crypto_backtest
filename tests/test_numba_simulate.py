@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from datetime import datetime, timezone
 
-from backtest.numba_simulate import simulate, load_bars
+from backtest.numba_simulate import simulate_close_reopen as simulate, load_bars
 
 
 DB_PATH = "data/klines.db"
