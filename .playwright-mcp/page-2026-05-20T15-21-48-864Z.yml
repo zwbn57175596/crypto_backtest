@@ -1,0 +1,5 @@
+- generic [ref=e2]:
+  - text: Token
+  - textbox "Token" [ref=e3]:
+    - /placeholder: ACCESS KEY
+  - button "AUTHORIZE" [ref=e4] [cursor=pointer]
