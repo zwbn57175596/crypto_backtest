@@ -226,6 +226,94 @@ def cmd_run(args: argparse.Namespace, extra_args: list[str] | None = None) -> No
     print(f"\nReport saved. View with: python -m backtest web")
 
 
+def cmd_portfolio_run(args: argparse.Namespace) -> None:
+    import json
+    import sqlite3
+    from backtest.portfolio_engine import PortfolioBacktestEngine
+    from backtest.reporter import Reporter
+
+    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+    db_path = args.db or str(Path("data") / "klines.db")
+
+    engine = PortfolioBacktestEngine(
+        db_path=db_path,
+        symbols=symbols,
+        interval=args.interval,
+        exchange=args.exchange or "binance",
+        balance=args.balance,
+        leverage=args.leverage,
+        consecutive_threshold=args.consecutive_threshold,
+        position_multiplier=args.position_multiplier,
+        initial_position_pct=args.initial_position_pct,
+        profit_candle_threshold=args.profit_candle_threshold,
+        max_position_symbols=args.max_position_symbols,
+        margin_ratio_limit=args.margin_ratio_limit,
+        start=f"{args.start} 00:00:00" if args.start else None,
+        end=f"{args.end} 23:59:59" if args.end else None,
+    )
+
+    print(
+        f"[组合回测] 标的={len(symbols)} 区间={args.start}~{args.end} "
+        f"余额={args.balance} 杠杆={args.leverage}x "
+        f"连续阈值={args.consecutive_threshold} 乘数={args.position_multiplier}"
+    )
+
+    result = engine.run()
+    report = Reporter.generate(result)
+    report["portfolio_symbols"] = symbols
+    report["per_symbol_stats"] = result["per_symbol_stats"]
+    report["run_leverage"] = args.leverage
+    report["run_balance"] = args.balance
+    report["run_start"] = args.start
+    report["run_end"] = args.end
+
+    print("\n=== 组合指标 ===")
+    print(f"  net_return:       {report['net_return']:+.2%}")
+    print(f"  annual_return:    {report['annual_return']:+.2%}")
+    print(f"  max_drawdown:     {report['max_drawdown']:.2%}")
+    print(f"  sharpe_ratio:     {report['sharpe_ratio']:.2f}")
+    print(f"  sortino_ratio:    {report['sortino_ratio']:.2f}")
+    print(f"  win_rate:         {report['win_rate']:.2%}")
+    print(f"  profit_factor:    {report['profit_factor']:.2f}")
+    print(f"  total_trades:     {report['total_trades']}")
+    print(f"  total_commission: {report['total_commission']:.2f} USDT")
+
+    print("\n=== 各标的统计 ===")
+    for sym, stats in result["per_symbol_stats"].items():
+        print(
+            f"  {sym:12s}  交易={stats['total_trades']:>4}  "
+            f"胜率={stats['win_rate']:.1%}  "
+            f"净PnL={stats['net_pnl']:+.2f} USDT"
+        )
+
+    report_db = str(Path(db_path).parent / "reports.db")
+    conn = sqlite3.connect(report_db)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy TEXT, symbol TEXT, interval TEXT,
+            created_at TEXT, report_json TEXT
+        )
+    """)
+    cur = conn.execute(
+        "INSERT INTO reports (strategy, symbol, interval, created_at, report_json) "
+        "VALUES (?,?,?,?,?)",
+        (
+            "PortfolioConsecutiveReverse",
+            ",".join(symbols),
+            args.interval,
+            datetime.now(timezone.utc).isoformat(),
+            json.dumps(report),
+        ),
+    )
+    conn.commit()
+    report_id = cur.lastrowid
+    conn.close()
+
+    print(f"\n报告已存入 reports.db (id={report_id})")
+    print("查看: python -m backtest web")
+
+
 def cmd_web(args: argparse.Namespace) -> None:
     import uvicorn
     from backtest.web.app import create_app
@@ -527,6 +615,31 @@ def main() -> None:
                        help="Margin mode (isolated=per-position, cross=account-wide)")
     p_run.add_argument("--db", default=None)
 
+    p_portfolio = sub.add_parser("portfolio-run", help="Run portfolio backtest across multiple symbols")
+    p_portfolio.add_argument("--symbols", required=True,
+                             help="Comma-separated symbols e.g. BTCUSDT,ETHUSDT,SOLUSDT")
+    p_portfolio.add_argument("--interval", required=True)
+    p_portfolio.add_argument("--exchange", default="binance")
+    p_portfolio.add_argument("--start", required=True, help="YYYY-MM-DD")
+    p_portfolio.add_argument("--end", required=True, help="YYYY-MM-DD")
+    p_portfolio.add_argument("--balance", type=float, default=10000.0)
+    p_portfolio.add_argument("--leverage", type=int, default=10)
+    p_portfolio.add_argument("--consecutive-threshold", type=int, default=7,
+                             dest="consecutive_threshold")
+    p_portfolio.add_argument("--position-multiplier", type=float, default=2.9,
+                             dest="position_multiplier")
+    p_portfolio.add_argument("--initial-position-pct", type=float, default=0.05,
+                             dest="initial_position_pct",
+                             help="Size per position as fraction of wallet (default 0.05 = 5%%)")
+    p_portfolio.add_argument("--profit-candle-threshold", type=int, default=3,
+                             dest="profit_candle_threshold")
+    p_portfolio.add_argument("--max-position-symbols", type=int, default=10,
+                             dest="max_position_symbols")
+    p_portfolio.add_argument("--margin-ratio-limit", type=float, default=0.8,
+                             dest="margin_ratio_limit",
+                             help="Stop opening new symbols when total_margin/equity exceeds this")
+    p_portfolio.add_argument("--db", default=None)
+
     p_web = sub.add_parser("web", help="Start web report viewer")
     p_web.add_argument("--port", type=int, default=8000)
     p_web.add_argument("--db", default=None)
@@ -603,6 +716,8 @@ def main() -> None:
         cmd_optimize(args)
     elif args.command == "live":
         cmd_live(args)
+    elif args.command == "portfolio-run":
+        cmd_portfolio_run(args)
     else:
         parser.print_help()
 
