@@ -1,0 +1,31 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e5]:
+    - banner [ref=e6]:
+      - heading "BET-Moya" [level=1] [ref=e37]
+      - generic [ref=e8]: Strategy Archive
+    - generic [ref=e9]:
+      - generic [ref=e39]:
+        - generic [ref=e40]:
+          - generic [ref=e41]: 累计净值 NAV（UTC+8 · 日频）
+          - button "全屏" [ref=e42] [cursor=pointer]
+        - generic [ref=e43]: 最新 2026-05-20 · NAV 1.22009 · 日净利 -46.23 USDT · 累计净利 479.32 USDT · 日净流(入−出) 0.00 USDT
+      - generic [ref=e14]:
+        - generic [ref=e46]: 汇总 - [持仓快照] [2026-05-20 23:00:42] 钱包≈2986.64 可用≈2215.68 非零头寸=3个 多0 空3 多uPnL=+0.0000 USDT 空uPnL=+9.2640 USDT 合计uPnL=+9.2640 USDT
+        - generic [ref=e47]: "[账户风控] 23:00:38 所内持仓品种=4 本根可新开槽位≈4 保证占用≈26.31% (initial≈791.0126 marginBalance≈3006.6291)"
+        - generic [ref=e48]: "[账户][余额] 2026-05-20 23:00:38 钱包USDT≈2986.64 可用≈2215.68（本根 K 线 apply_kline 档位基数=钱包≈2986.64）"
+        - generic [ref=e49]: 汇总 - [持仓快照] [2026-05-20 22:00:44] 钱包≈3039.16 可用≈1934.72 非零头寸=4个 多0 空4 多uPnL=+0.0000 USDT 空uPnL=-9.5866 USDT 合计uPnL=-9.5866 USDT
+        - generic [ref=e50]: "[账户风控] 22:00:39 所内持仓品种=5 本根可新开槽位≈3 保证占用≈35.06% (initial≈1044.4709 marginBalance≈2979.1801)"
+        - generic [ref=e51]: "[账户][余额] 2026-05-20 22:00:38 钱包USDT≈3039.16 可用≈1934.72（本根 K 线 apply_kline 档位基数=钱包≈3039.16）"
+        - generic [ref=e52]: 汇总 - [持仓快照] [2026-05-20 21:00:43] 钱包≈2943.32 可用≈2083.82 非零头寸=5个 多1 空4 多uPnL=-60.8226 USDT 空uPnL=-49.5341 USDT 合计uPnL=-110.3567 USDT
+        - generic [ref=e53]: "[账户风控] 21:00:38 所内持仓品种=4 本根可新开槽位≈4 保证占用≈28.86% (initial≈845.6507 marginBalance≈2930.2631)"
+        - generic [ref=e54]: "[账户][余额] 2026-05-20 21:00:38 钱包USDT≈2943.32 可用≈2083.82（本根 K 线 apply_kline 档位基数=钱包≈2943.32）"
+        - generic [ref=e55]: 汇总 - [持仓快照] [2026-05-20 20:00:43] 钱包≈2943.52 可用≈2130.64 非零头寸=4个 多1 空3 多uPnL=-72.0931 USDT 空uPnL=+26.6008 USDT 合计uPnL=-45.4923 USDT
+      - generic [ref=e25] [cursor=pointer]: INDEX / NEXT
+  - generic [ref=e26]:
+    - navigation [ref=e27]:
+      - generic [ref=e28] [cursor=pointer]: Pang
+      - generic [ref=e29] [cursor=pointer]: BET-Moya
+      - generic [ref=e30] [cursor=pointer]: FFA-P
+      - generic [ref=e31] [cursor=pointer]: ZW
+    - generic "切换深色/浅色模式" [ref=e33] [cursor=pointer]:
+      - img [ref=e34]
