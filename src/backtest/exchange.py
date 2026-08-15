@@ -13,11 +13,19 @@ class SimExchange:
         funding_rate: float,
         maintenance_margin: float,
         margin_mode: str = "isolated",
+        maker_commission_rate: float | None = None,
+        taker_commission_rate: float | None = None,
     ):
         self.initial_balance = balance
         self.balance = balance
         self.leverage = leverage
         self.commission_rate = commission_rate
+        self.maker_commission_rate = (
+            maker_commission_rate if maker_commission_rate is not None else commission_rate
+        )
+        self.taker_commission_rate = (
+            taker_commission_rate if taker_commission_rate is not None else commission_rate
+        )
         self.funding_rate = funding_rate
         self.maintenance_margin = maintenance_margin
         self.margin_mode = margin_mode
@@ -26,6 +34,7 @@ class SimExchange:
         self._pending_orders: list[Order] = []
         self._trades: list[Trade] = []
         self._equity_curve: list[tuple[int, float]] = []
+        self._brackets: dict[str, dict] = {}
 
     @property
     def is_bankrupt(self) -> bool:
@@ -103,7 +112,8 @@ class SimExchange:
         order.filled_price = price
         order.filled_at = bar.timestamp
 
-        commission = order.quantity * self.commission_rate
+        rate = self.maker_commission_rate if order.type == "limit" else self.taker_commission_rate
+        commission = order.quantity * rate
         order.commission = commission
         self.balance -= commission
 
