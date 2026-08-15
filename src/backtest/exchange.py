@@ -41,7 +41,8 @@ class SimExchange:
         return self.balance <= 0 and not self._positions
 
     def submit_order(
-        self, symbol: str, side: str, type_: str, quantity: float, price: float | None = None
+        self, symbol: str, side: str, type_: str, quantity: float,
+        price: float | None = None, expire_ts: int = 0,
     ) -> Order:
         if self.is_bankrupt:
             return Order(
@@ -60,6 +61,7 @@ class SimExchange:
             type=type_,
             quantity=quantity,
             price=price,
+            expire_ts=expire_ts,
         )
         self._pending_orders.append(order)
         return order
@@ -93,8 +95,11 @@ class SimExchange:
             filled_price = self._try_fill(order, bar)
             if filled_price is not None:
                 self._execute_fill(order, filled_price, bar)
-            else:
-                still_pending.append(order)
+                continue
+            if order.expire_ts and bar.timestamp >= order.expire_ts:
+                order.status = "canceled"
+                continue
+            still_pending.append(order)
         self._pending_orders = still_pending
 
     def _try_fill(self, order: Order, bar: Bar) -> float | None:

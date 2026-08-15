@@ -36,3 +36,28 @@ def test_rates_fall_back_to_commission_rate():
                      funding_rate=0.0, maintenance_margin=0.005)
     assert ex.maker_commission_rate == 0.0004
     assert ex.taker_commission_rate == 0.0004
+
+
+def test_limit_order_expires_when_unfilled():
+    ex = SimExchange(1000, 10, 0.0004, 0.0, 0.005)
+    ex.submit_order("BTCUSDT", "buy", "limit", 100.0, price=90.0, expire_ts=2000)
+    ex.on_new_bar(_bar("BTCUSDT", 1000, 100, 101, 95, 100))  # low 95 > 90: no fill, not expired
+    assert len(ex._pending_orders) == 1
+    ex.on_new_bar(_bar("BTCUSDT", 2000, 100, 101, 95, 100))  # ts >= expire, still no fill: canceled
+    assert len(ex._pending_orders) == 0
+    assert ex.get_position("BTCUSDT") is None
+
+
+def test_limit_order_fills_on_expiry_bar_before_cancel():
+    ex = SimExchange(1000, 10, 0.0004, 0.0, 0.005)
+    ex.submit_order("BTCUSDT", "buy", "limit", 100.0, price=90.0, expire_ts=2000)
+    ex.on_new_bar(_bar("BTCUSDT", 2000, 100, 101, 89, 100))  # low 89 <= 90: fills even on expiry bar
+    assert ex.get_position("BTCUSDT") is not None
+    assert len(ex._pending_orders) == 0
+
+
+def test_expire_ts_zero_never_expires():
+    ex = SimExchange(1000, 10, 0.0004, 0.0, 0.005)
+    ex.submit_order("BTCUSDT", "buy", "limit", 100.0, price=90.0)  # expire_ts default 0
+    ex.on_new_bar(_bar("BTCUSDT", 9_999_999, 100, 101, 95, 100))
+    assert len(ex._pending_orders) == 1  # still alive
