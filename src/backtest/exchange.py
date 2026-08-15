@@ -70,6 +70,7 @@ class SimExchange:
         self._settle_funding(bar)
         self._match_orders(bar)
         self._update_unrealized_pnl(bar)
+        self._resolve_brackets(bar)
         self._check_liquidation(bar)
         self._ensure_no_bankruptcy(bar)
         self._record_equity(bar)
@@ -200,6 +201,71 @@ class SimExchange:
             pos.unrealized_pnl = pos.quantity * (bar.close - pos.entry_price) / pos.entry_price
         else:
             pos.unrealized_pnl = pos.quantity * (pos.entry_price - bar.close) / pos.entry_price
+
+    def set_bracket(self, symbol: str, tp_price: float, sl_price: float, expire_ts: int) -> None:
+        self._brackets[symbol] = {
+            "tp_price": tp_price,
+            "sl_price": sl_price,
+            "expire_ts": expire_ts,
+        }
+
+    def _resolve_brackets(self, bar: Bar) -> None:
+        bracket = self._brackets.get(bar.symbol)
+        if bracket is None:
+            return
+        pos = self._positions.get(bar.symbol)
+        if pos is None:
+            self._brackets.pop(bar.symbol, None)  # stale (position closed elsewhere)
+            return
+        tp = bracket["tp_price"]
+        sl = bracket["sl_price"]
+        expire_ts = bracket["expire_ts"]
+
+        if pos.side == "long":
+            if bar.low <= sl:  # conservative: SL before TP
+                self._close_position_at(bar.symbol, sl, self.taker_commission_rate, bar, "sl")
+                return
+            if bar.high >= tp:
+                self._close_position_at(bar.symbol, tp, self.maker_commission_rate, bar, "tp")
+                return
+        else:  # short
+            if bar.high >= sl:
+                self._close_position_at(bar.symbol, sl, self.taker_commission_rate, bar, "sl")
+                return
+            if bar.low <= tp:
+                self._close_position_at(bar.symbol, tp, self.maker_commission_rate, bar, "tp")
+                return
+
+        if expire_ts and bar.timestamp >= expire_ts:
+            self._close_position_at(bar.symbol, bar.close, self.taker_commission_rate, bar, "time")
+
+    def _close_position_at(
+        self, symbol: str, price: float, fee_rate: float, bar: Bar, reason: str
+    ) -> None:
+        pos = self._positions.get(symbol)
+        if pos is None:
+            return
+        if pos.side == "long":
+            pnl = pos.quantity * (price - pos.entry_price) / pos.entry_price
+        else:
+            pnl = pos.quantity * (pos.entry_price - price) / pos.entry_price
+        commission = pos.quantity * fee_rate
+        self.balance += pnl
+        self.balance += pos.margin
+        self.balance -= commission
+        self._trades.append(Trade(
+            id=uuid.uuid4().hex[:8],
+            order_id=f"bracket-{reason}",
+            symbol=symbol,
+            side="sell" if pos.side == "long" else "buy",
+            price=price,
+            quantity=pos.quantity,
+            pnl=pnl,
+            commission=commission,
+            timestamp=bar.timestamp,
+        ))
+        del self._positions[symbol]
+        self._brackets.pop(symbol, None)
 
     def _check_liquidation(self, bar: Bar) -> None:
         if self.margin_mode == "isolated":
