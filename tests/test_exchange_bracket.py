@@ -121,3 +121,16 @@ def test_bracket_short_take_profit():
     assert t.order_id == "bracket-tp"
     assert t.price == 95.0
     assert abs(t.pnl - 5.0) < 1e-9  # short: 100*(100-95)/100
+
+
+def test_liquidation_pops_stale_bracket():
+    ex = SimExchange(1000, 10, 0.0, 0.0, 0.005)  # isolated, maintenance 0.005
+    ex.submit_order("BTCUSDT", "buy", "market", 1000.0)
+    ex.on_new_bar(_bar("BTCUSDT", 1000, 100, 100, 100, 100))  # long @100, margin 100
+    # SL far away (won't trigger), so liquidation is what removes the position
+    ex.set_bracket("BTCUSDT", tp_price=200.0, sl_price=50.0, expire_ts=0)
+    assert "BTCUSDT" in ex._brackets
+    # ~11% adverse move: sl(50)/tp(200) untouched, but 10x isolated liquidates
+    ex.on_new_bar(_bar("BTCUSDT", 2000, 100, 100, 89, 89))
+    assert ex.get_position("BTCUSDT") is None          # liquidated
+    assert "BTCUSDT" not in ex._brackets                # <-- the fix: no stale bracket

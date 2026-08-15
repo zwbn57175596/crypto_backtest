@@ -154,6 +154,7 @@ class SimExchange:
             remaining = pos.quantity - close_qty
             if remaining <= 1e-8:
                 del self._positions[order.symbol]
+                self._brackets.pop(order.symbol, None)
             else:
                 pos.quantity = remaining
 
@@ -292,6 +293,7 @@ class SimExchange:
             ))
             self.balance -= min(pos.margin, self.balance)
             del self._positions[bar.symbol]
+            self._brackets.pop(bar.symbol, None)
 
     def _check_liquidation_cross(self, bar: Bar) -> None:
         if not self._positions:
@@ -314,6 +316,7 @@ class SimExchange:
             ))
         self.balance = max(0.0, total_equity)
         self._positions.clear()
+        self._brackets.clear()
 
     def _ensure_no_bankruptcy(self, bar: Bar) -> None:
         if self.balance < 0:
@@ -333,6 +336,7 @@ class SimExchange:
                     ))
                 self.balance = max(0.0, total_equity)
                 self._positions.clear()
+                self._brackets.clear()
 
     def _record_equity(self, bar: Bar) -> None:
         equity = self.balance

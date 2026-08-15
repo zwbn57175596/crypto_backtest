@@ -79,3 +79,26 @@ def test_engine_reports_miss_when_limit_never_fills(tmp_path):
     assert result["entries_filled"] == 0
     assert result["miss_rate"] == 1.0
     assert result["final_equity"] == result["initial_balance"]  # 无成交无费
+
+
+def test_engine_run_is_idempotent(tmp_path):
+    rows = [
+        _row(0 * INTERVAL_MS, 100, 101, 100, 101),
+        _row(1 * INTERVAL_MS, 101, 102, 101, 102),
+        _row(2 * INTERVAL_MS, 102, 103, 102, 103),
+        _row(3 * INTERVAL_MS, 103, 104, 102.5, 103.5),
+        _row(4 * INTERVAL_MS, 103, 103.2, 101, 102),
+        _row(5 * INTERVAL_MS, 102, 102, 101.9, 101.95),
+    ]
+    db = _make_db(tmp_path, rows)
+    params = MRParams(threshold=3, tp_pct=0.01, sl_pct=0.01, time_stop_bars=10,
+                      risk_pct=0.01, entry_offset_pct=0.001, entry_ttl_bars=3)
+    engine = MeanReversionPortfolioEngine(
+        db_path=db, symbols=["AAAUSDT"], interval="1h", exchange="okx",
+        params=params, balance=10000.0, leverage=10)
+    r1 = engine.run()
+    r2 = engine.run()  # same instance, twice
+    assert r1["final_equity"] == r2["final_equity"]
+    assert r1["entries_submitted"] == r2["entries_submitted"]
+    assert r1["miss_rate"] == r2["miss_rate"]
+    assert len(r1["trades"]) == len(r2["trades"])
