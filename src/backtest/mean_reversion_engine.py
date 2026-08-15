@@ -72,6 +72,7 @@ class MeanReversionPortfolioEngine:
         return int(dt.timestamp() * 1000)
 
     def run(self) -> dict:
+        self._entries_submitted = 0
         sim = SimExchange(
             balance=self.balance,
             leverage=self.leverage,
@@ -147,6 +148,8 @@ class MeanReversionPortfolioEngine:
 
         # 1) 持仓存在但尚无 bracket（本 bar 刚成交）→ 补挂 bracket
         if pos is not None:
+            # 已成交，标记不再是"未成交挂单"，避免平仓后误判为仍在等待入场单
+            state["pending_expire_ts"] = 0
             if sym not in sim._brackets:
                 tp, sl = bracket_prices(
                     pos.entry_price, pos.side, self.params.tp_pct, self.params.sl_pct
