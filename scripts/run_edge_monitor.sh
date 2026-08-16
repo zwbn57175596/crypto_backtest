@@ -27,6 +27,9 @@ if [ "$rc" -eq 10 ]; then
     eval "$EDGE_ALERT_CMD" || echo "[edge-monitor] alert command failed" >&2
   fi
   exit 0
+elif [ "$rc" -eq 5 ]; then
+  echo "[edge-monitor] WATCH: edge positive but sample too small — keep watching, do not act"
+  exit 0
 elif [ "$rc" -eq 0 ]; then
   exit 0
 else

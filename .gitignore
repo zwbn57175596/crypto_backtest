@@ -22,3 +22,4 @@ data/*.key
 
 .codex.worktrees/
 .codex
+data/edge_monitor_status.json

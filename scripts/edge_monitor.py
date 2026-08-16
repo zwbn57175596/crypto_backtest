@@ -172,6 +172,9 @@ def main() -> int:
                     help="Realistic per-side slippage in bps (default 5, realistic for alts)")
     ap.add_argument("--go-threshold-bps", type=float, default=2.0,
                     help="90d edge at/above this (and 60d>0) => GO signal (default 2.0)")
+    ap.add_argument("--min-trades", type=int, default=300,
+                    help="Min closing trades in the longest window for a GO (else WATCH); "
+                         "guards against small-sample false positives (default 300)")
     ap.add_argument("--no-collect", action="store_true", help="Skip fetching fresh klines")
     ap.add_argument("--status-file", default=str(Path("data") / "edge_monitor_status.json"))
     ap.add_argument("--json", action="store_true", help="Print machine-readable JSON to stdout too")
@@ -194,15 +197,24 @@ def main() -> int:
         per_window[d] = measure(args.db, symbols, regime, end_ms - d * 86_400_000, end_ms,
                                 args.slippage_bps)
 
-    e90 = per_window.get(90, per_window[windows[-1]])["edge_bps"]
-    e60 = per_window.get(60, per_window[windows[len(windows) // 2]])["edge_bps"]
-    signal = "GO" if (e90 >= args.go_threshold_bps and e60 > 0) else "HOLD"
+    long_w = windows[-1]
+    mid_w = windows[len(windows) // 2]
+    e_long = per_window[long_w]["edge_bps"]
+    e_mid = per_window[mid_w]["edge_bps"]
+    n_long = per_window[long_w]["closing_trades"]
+    edge_positive = e_long >= args.go_threshold_bps and e_mid > 0
+    if edge_positive and n_long >= args.min_trades:
+        signal = "GO"       # edge back AND on enough data -> worth human re-evaluation
+    elif edge_positive:
+        signal = "WATCH"    # promising but too few trades to trust -> keep watching, don't act
+    else:
+        signal = "HOLD"     # edge still eroded
 
     status = {
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "data_through": datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc).isoformat(),
         "config": {"struct": STRUCT, "symbols": symbols, "slippage_bps": args.slippage_bps,
-                   "go_threshold_bps": args.go_threshold_bps},
+                   "go_threshold_bps": args.go_threshold_bps, "min_trades": args.min_trades},
         "windows": per_window,
         "signal": signal,
     }
@@ -217,12 +229,16 @@ def main() -> int:
         w = per_window[d]
         print(f"  trailing {d:>3}d: edge={w['edge_bps']:+6.2f} bps  win={w['win_rate']:.0%}  "
               f"maxDD={w['max_drawdown']:.0%}  sharpe={w['sharpe']:+.2f}  trades={w['closing_trades']}")
-    print(f"  SIGNAL: {signal}  "
-          f"({'edge revived — consider (small) deployment' if signal == 'GO' else 'edge still eroded — do NOT deploy'})")
+    reason = {
+        "GO": "edge revived on sufficient data — human re-evaluation warranted",
+        "WATCH": f"edge positive but only {n_long} trades (<{args.min_trades}) — keep watching, do NOT act",
+        "HOLD": "edge still eroded — do NOT deploy",
+    }[signal]
+    print(f"  SIGNAL: {signal}  ({reason})")
     if args.json:
         print(json.dumps(status))
-    # exit code: 0 = HOLD (nominal), 10 = GO (revival — for alerting hooks); 2 = error
-    return 10 if signal == "GO" else 0
+    # exit code: 0 = HOLD (nominal), 5 = WATCH, 10 = GO (revival, for alerts); 2 = error
+    return {"HOLD": 0, "WATCH": 5, "GO": 10}[signal]
 
 
 if __name__ == "__main__":
