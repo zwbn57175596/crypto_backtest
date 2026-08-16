@@ -1,0 +1,21 @@
+[Unit]
+Description=Crypto MR strategy edge health monitor (measurement only, never trades)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# --- adjust these two to match LXC 203 (appserver) ---
+User=appserver
+WorkingDirectory=/opt/crypto_backtest
+# ------------------------------------------------------
+ExecStart=/opt/crypto_backtest/scripts/run_edge_monitor.sh
+# Optional: fire an alert when the edge revives (GO). Example webhook:
+# Environment=EDGE_ALERT_CMD=curl -fsS -X POST https://your-webhook -d "edge revived"
+# Optional: override monitor args, e.g. stricter slippage:
+# Environment=EDGE_MONITOR_ARGS=--slippage-bps 4
+TimeoutStartSec=1200
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
