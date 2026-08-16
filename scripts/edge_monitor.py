@@ -109,6 +109,24 @@ def _last_ts(db_path: str, symbols: list[str]) -> int | None:
     return row[0] if row and row[0] else None
 
 
+def data_freshness(db_path: str, symbols: list[str]) -> dict:
+    """Per-symbol last bar time + total bar count (for the dashboard)."""
+    conn = sqlite3.connect(db_path)
+    out = {}
+    for sym in [*symbols, REGIME_SYMBOL]:
+        row = conn.execute(
+            "SELECT COUNT(*), MAX(timestamp) FROM klines WHERE exchange=? AND symbol=? AND interval=?",
+            (EXCHANGE, sym, INTERVAL),
+        ).fetchone()
+        last = row[1] or 0
+        out[sym] = {
+            "bars": row[0] or 0,
+            "last_bar": datetime.fromtimestamp(last / 1000, tz=timezone.utc).isoformat() if last else None,
+        }
+    conn.close()
+    return out
+
+
 def collect_fresh(db_path: str, symbols: list[str], overlap_days: int = 3) -> None:
     """Fetch new klines from the last stored bar up to now (public data, no keys)."""
     from backtest.collector import COLLECTORS
@@ -177,6 +195,8 @@ def main() -> int:
                          "guards against small-sample false positives (default 300)")
     ap.add_argument("--no-collect", action="store_true", help="Skip fetching fresh klines")
     ap.add_argument("--status-file", default=str(Path("data") / "edge_monitor_status.json"))
+    ap.add_argument("--history-file", default=str(Path("data") / "edge_monitor_history.jsonl"),
+                    help="Append-only JSONL log of every run (for the dashboard trend)")
     ap.add_argument("--json", action="store_true", help="Print machine-readable JSON to stdout too")
     args = ap.parse_args()
 
@@ -214,12 +234,24 @@ def main() -> int:
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "data_through": datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc).isoformat(),
         "config": {"struct": STRUCT, "symbols": symbols, "slippage_bps": args.slippage_bps,
-                   "go_threshold_bps": args.go_threshold_bps, "min_trades": args.min_trades},
+                   "go_threshold_bps": args.go_threshold_bps, "min_trades": args.min_trades,
+                   "interval": INTERVAL, "regime": "BTC 7d realized vol > ~60d EMA"},
         "windows": per_window,
+        "data_freshness": data_freshness(args.db, symbols),
         "signal": signal,
     }
     Path(args.status_file).parent.mkdir(parents=True, exist_ok=True)
     Path(args.status_file).write_text(json.dumps(status, indent=2))
+
+    # append compact record to the history log (drives the dashboard trend chart)
+    hist = {"checked_at": status["checked_at"], "data_through": status["data_through"],
+            "signal": signal, "n_long": n_long}
+    for d in windows:
+        hist[f"edge_{d}d"] = per_window[d]["edge_bps"]
+    hist_path = Path(args.history_file)
+    hist_path.parent.mkdir(parents=True, exist_ok=True)
+    with hist_path.open("a") as f:
+        f.write(json.dumps(hist) + "\n")
 
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     print(f"=== Edge health check @ {stamp} (data through "

@@ -205,6 +205,43 @@ def optimize_page():
     return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
 
 
+def _data_dir(request: Request) -> Path:
+    return Path(_get_db(request)).parent
+
+
+@router.get("/api/edge-monitor/status")
+def edge_monitor_status(request: Request):
+    """Latest edge-monitor snapshot (written by scripts/edge_monitor.py)."""
+    path = _data_dir(request) / "edge_monitor_status.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="No edge-monitor status yet — run the monitor first")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@router.get("/api/edge-monitor/history")
+def edge_monitor_history(request: Request, limit: int = Query(500, ge=1, le=5000)):
+    """Time series of past monitor runs (compact records, oldest -> newest)."""
+    path = _data_dir(request) / "edge_monitor_history.jsonl"
+    if not path.exists():
+        return []
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    records = []
+    for ln in lines[-limit:]:
+        try:
+            records.append(json.loads(ln))
+        except json.JSONDecodeError:
+            continue
+    return records
+
+
+@router.get("/edge-monitor", response_class=HTMLResponse)
+def edge_monitor_page():
+    html_path = Path(__file__).parent / "static" / "edge_monitor.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="Edge monitor page not found")
+    return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
+
+
 @router.get("/", response_class=HTMLResponse)
 def index():
     html_path = Path(__file__).parent / "static" / "index.html"

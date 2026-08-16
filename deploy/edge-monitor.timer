@@ -2,12 +2,13 @@
 Description=Weekly crypto MR edge health check
 
 [Timer]
-# Every Monday 08:00 UTC. Adjust as you like (OnCalendar uses the container's tz).
-OnCalendar=Mon *-*-* 08:00:00
-# If the box was off at the scheduled time, run at next boot.
+# Hourly, a few minutes after each 1h candle closes (so the just-closed bar is
+# available). Change OnCalendar to reschedule.
+OnCalendar=*-*-* *:05:00
+# If the box was off at the scheduled time, run once at next boot/timer start.
 Persistent=true
-# Small random delay to avoid hammering the exchange API on the dot.
-RandomizedDelaySec=300
+# Small jitter to avoid hitting the exchange API exactly on the minute.
+RandomizedDelaySec=90
 
 [Install]
 WantedBy=timers.target
