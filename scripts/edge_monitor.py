@@ -139,7 +139,9 @@ def collect_fresh(db_path: str, symbols: list[str], overlap_days: int = 3) -> No
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     for sym in [*symbols, REGIME_SYMBOL]:
         last = _last_ts(db_path, [sym])
-        start_ms = (last - overlap_days * 86_400_000) if last else (now_ms - 400 * 86_400_000)
+        # first time for a symbol: fetch ~140d (enough for the 90d ranking window);
+        # thereafter only the incremental gap (+overlap) — keeps hourly runs cheap.
+        start_ms = (last - overlap_days * 86_400_000) if last else (now_ms - 140 * 86_400_000)
         try:
             asyncio.run(collector.fetch(sym, INTERVAL, start_ms, now_ms))
         except Exception as e:  # network hiccup on one symbol must not kill the run
@@ -179,6 +181,111 @@ def measure(db_path: str, symbols: list[str], regime: dict, start_ms: int, end_m
     }
 
 
+def load_or_refresh_universe(path: str, top: int, max_age_hours: float) -> list[dict]:
+    """Load the universe file; re-fetch from OKX if missing or stale."""
+    p = Path(path)
+    fresh = False
+    data = None
+    if p.exists():
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            age_h = (datetime.now(timezone.utc)
+                     - datetime.fromisoformat(data["fetched_at"])).total_seconds() / 3600
+            fresh = age_h <= max_age_hours and data.get("count", 0) >= 1
+        except Exception:
+            fresh = False
+    if not fresh:
+        try:
+            from scripts.fetch_universe import fetch_top
+            syms = fetch_top(top)
+            data = {"fetched_at": datetime.now(timezone.utc).isoformat(),
+                    "exchange": EXCHANGE, "count": len(syms), "symbols": syms}
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(data, indent=2))
+        except Exception as e:
+            if data is None:
+                raise
+            print(f"[universe] refresh failed ({e}); using cached list", file=sys.stderr)
+    return data["symbols"]
+
+
+def rank_universe(db_path: str, universe: list[dict], regime: dict, start_ms: int, end_ms: int,
+                  min_show_trades: int) -> list[dict]:
+    """Per-coin vol-filtered edge over the window, at each coin's own slippage tier, ranked desc."""
+    ranked = []
+    for u in universe:
+        m = measure(db_path, [u["symbol"]], regime, start_ms, end_ms, u["slip_bps"])
+        if m["closing_trades"] < min_show_trades:
+            continue
+        ranked.append({
+            "symbol": u["symbol"], "vol_rank": u["rank"], "vol_usd": u["vol_usd"],
+            "slip_bps": u["slip_bps"], "edge_bps": m["edge_bps"], "win_rate": m["win_rate"],
+            "sharpe": m["sharpe"], "closing_trades": m["closing_trades"],
+        })
+    ranked.sort(key=lambda r: r["edge_bps"], reverse=True)
+    return ranked
+
+
+def run_universe_mode(args, windows) -> int:
+    universe = load_or_refresh_universe(args.universe_file, args.top_fetch, args.universe_max_age_hours)
+    symbols = [u["symbol"] for u in universe]
+    if not args.no_collect:
+        collect_fresh(args.db, symbols)
+    end_ms = _last_ts(args.db, symbols)
+    if end_ms is None:
+        print("ERROR: no kline data found; run collection first.", file=sys.stderr)
+        return 2
+
+    window = windows[-1]  # rank on the longest trailing window (default 90d)
+    regime = build_regime(args.db)
+    ranked = rank_universe(args.db, universe, regime, end_ms - window * 86_400_000, end_ms,
+                           min_show_trades=15)
+    top = ranked[:args.top_show]
+    positive = [r for r in ranked
+                if r["edge_bps"] >= args.go_threshold_bps and r["closing_trades"] >= args.min_symbol_trades]
+    n_pos = len(positive)
+    signal = "GO" if n_pos >= args.go_count else ("WATCH" if n_pos >= 1 else "HOLD")
+
+    status = {
+        "mode": "universe",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "data_through": datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc).isoformat(),
+        "config": {"struct": STRUCT, "exchange": EXCHANGE, "universe_size": len(symbols),
+                   "ranked_on_days": window, "go_threshold_bps": args.go_threshold_bps,
+                   "min_symbol_trades": args.min_symbol_trades, "go_count": args.go_count,
+                   "interval": INTERVAL, "regime": "BTC 7d realized vol > ~60d EMA",
+                   "slippage": "per-coin by liquidity tier (2/3/4.5/6 bps)"},
+        "n_analyzed": len(ranked), "n_positive": n_pos,
+        "top_symbols": top,
+        "signal": signal,
+    }
+    Path(args.status_file).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.status_file).write_text(json.dumps(status, indent=2))
+
+    hist = {"checked_at": status["checked_at"], "data_through": status["data_through"],
+            "signal": signal, "n_positive": n_pos, "n_analyzed": len(ranked),
+            "top1_symbol": top[0]["symbol"] if top else None,
+            "top1_edge": top[0]["edge_bps"] if top else None,
+            "ranked_on_days": window}
+    hp = Path(args.history_file)
+    hp.parent.mkdir(parents=True, exist_ok=True)
+    with hp.open("a") as f:
+        f.write(json.dumps(hist) + "\n")
+
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    print(f"=== Universe scan @ {stamp} (data through {status['data_through'][:10]}) ===")
+    print(f"  {len(symbols)} coins fetched · {len(ranked)} with enough history · "
+          f"{n_pos} with tradeable edge (>= +{args.go_threshold_bps}bps, {args.min_symbol_trades}+ trades)")
+    print(f"  --- top {min(args.top_show, len(top))} by {window}d net edge (each at its own slippage) ---")
+    for i, r in enumerate(top, 1):
+        print(f"   {i:>2}. {r['symbol']:<13} edge={r['edge_bps']:+6.1f}bps  win={r['win_rate']:.0%}  "
+              f"n={r['closing_trades']:>4}  slip={r['slip_bps']}bps  volrank#{r['vol_rank']}")
+    print(f"  SIGNAL: {signal}  ({n_pos} tradeable coins right now)")
+    if args.json:
+        print(json.dumps(status))
+    return {"HOLD": 0, "WATCH": 5, "GO": 10}[signal]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Edge health monitor (measurement only, never trades)")
     ap.add_argument("--db", default=str(Path("data") / "klines.db"))
@@ -194,15 +301,30 @@ def main() -> int:
                     help="Min closing trades in the longest window for a GO (else WATCH); "
                          "guards against small-sample false positives (default 300)")
     ap.add_argument("--no-collect", action="store_true", help="Skip fetching fresh klines")
+    # ── universe-scan mode (top-N exchange coins -> ranked top-20 by edge) ──
+    ap.add_argument("--universe-file", default=None,
+                    help="If set, scan this universe (from fetch_universe.py) and rank coins by edge "
+                         "instead of measuring a fixed basket")
+    ap.add_argument("--top-fetch", type=int, default=200, help="Universe size to (re)fetch")
+    ap.add_argument("--top-show", type=int, default=20, help="How many top coins to surface")
+    ap.add_argument("--universe-max-age-hours", type=float, default=24.0,
+                    help="Re-fetch the universe list if older than this")
+    ap.add_argument("--go-count", type=int, default=5,
+                    help="Universe GO if >= this many coins have edge>=threshold on enough trades")
+    ap.add_argument("--min-symbol-trades", type=int, default=30,
+                    help="Per-coin min trades (in the ranking window) to count as a positive/tradeable coin")
     ap.add_argument("--status-file", default=str(Path("data") / "edge_monitor_status.json"))
     ap.add_argument("--history-file", default=str(Path("data") / "edge_monitor_history.jsonl"),
                     help="Append-only JSONL log of every run (for the dashboard trend)")
     ap.add_argument("--json", action="store_true", help="Print machine-readable JSON to stdout too")
     args = ap.parse_args()
 
-    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     windows = sorted(int(w) for w in args.windows_days.split(",") if w.strip())
 
+    if args.universe_file:
+        return run_universe_mode(args, windows)
+
+    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     if not args.no_collect:
         collect_fresh(args.db, symbols)
 

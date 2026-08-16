@@ -42,14 +42,17 @@
        font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.4px; }
   td { padding: 9px 10px; border-bottom: 1px solid #1a2230; font-variant-numeric: tabular-nums; }
   tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #222f42; }
+  .rankcell { color: #00d4aa; font-weight: 700; }
+  .sym { font-weight: 600; color: #e0e0e0; }
   .mono { font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
-  #chart { height: 320px; width: 100%; }
-  .cfg { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap: 8px 24px; font-size: 13px; }
-  .cfg div { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #24303f; }
-  .cfg .k { color: #889; } .cfg .v { color: #e0e0e0; font-family: ui-monospace, monospace; }
-  .stale { color: #f5a623; } .fresh { color: #22c55e; }
+  #chart { height: 300px; width: 100%; }
+  .cfg { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px,1fr)); gap: 8px 24px; font-size: 13px; }
+  .cfg div { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #24303f; gap: 12px; }
+  .cfg .k { color: #889; white-space: nowrap; } .cfg .v { color: #e0e0e0; font-family: ui-monospace, monospace; text-align: right; }
   #err { text-align: center; padding: 50px; color: #ef4444; }
   .refresh { font-size: 12px; color: #667; }
+  .pill { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: #263344; color: #9fb0c3; }
 </style>
 </head>
 <body>
@@ -70,76 +73,57 @@
   <div id="err" style="display:none;"></div>
   <div id="content" style="display:none;">
 
-    <!-- 分析结论 -->
     <div class="banner" id="banner">
       <div class="sigbadge" id="sigbadge">—</div>
       <div class="msg" id="sigmsg"></div>
     </div>
 
-    <div class="kpi-row">
-      <div class="kpi"><div class="label">90天 Edge</div><div class="value" id="k-e90">—</div></div>
-      <div class="kpi"><div class="label">60天 Edge</div><div class="value" id="k-e60">—</div></div>
-      <div class="kpi"><div class="label">数据截至</div><div class="value mut" id="k-through" style="font-size:15px;">—</div></div>
-      <div class="kpi"><div class="label">GO 阈值</div><div class="value mut" id="k-thr" style="font-size:15px;">—</div></div>
-    </div>
+    <div class="kpi-row" id="kpis"></div>
 
-    <!-- 分析 -->
     <div class="section">
-      <h2>分析 · 滚动 Edge 测量</h2>
-      <div class="hint">每美元名义成交的净收益（bps，已扣真实滑点，仅高波动 regime 开仓）。Edge > 0 才有优势；GO 需 90天 ≥ 阈值且样本足。</div>
-      <table>
-        <thead><tr><th>窗口</th><th>Edge (bps)</th><th>胜率</th><th>最大回撤</th><th>Sharpe</th><th>成交笔数</th></tr></thead>
-        <tbody id="windows"></tbody>
-      </table>
+      <h2 id="rankTitle">分析 · Top 币种排名</h2>
+      <div class="hint" id="rankHint"></div>
+      <div style="overflow-x:auto;"><table><thead id="rankHead"></thead><tbody id="rankBody"></tbody></table></div>
       <div style="margin-top:18px;"><div id="chart"></div></div>
     </div>
 
-    <!-- 触发 -->
     <div class="section">
       <h2>触发 · 运行历史</h2>
-      <div class="hint">每小时自动运行一次（systemd timer）。最近的运行与信号：</div>
-      <table>
-        <thead><tr><th>运行时间 (UTC)</th><th>信号</th><th>90天</th><th>60天</th><th>30天</th><th>样本</th></tr></thead>
-        <tbody id="runs"></tbody>
-      </table>
+      <div class="hint">每小时自动运行一次（systemd timer）。最近的扫描：</div>
+      <div style="overflow-x:auto;"><table><thead id="runHead"></thead><tbody id="runBody"></tbody></table></div>
     </div>
 
-    <!-- 采集 -->
     <div class="section">
-      <h2>采集 · 数据新鲜度</h2>
-      <div class="hint">每个标的的 1h K 线总数与最新一根。绿=新鲜（≤2h），黄=偏旧。</div>
-      <table>
-        <thead><tr><th>标的</th><th>K线总数</th><th>最新一根 (UTC)</th><th>状态</th></tr></thead>
-        <tbody id="freshness"></tbody>
-      </table>
+      <h2>采集 · 币池</h2>
+      <div class="cfg" id="collect"></div>
     </div>
 
-    <!-- 配置 -->
     <div class="section">
       <h2>配置</h2>
       <div class="cfg" id="cfg"></div>
     </div>
-
   </div>
 </div>
 
 <script>
-const fmtBps = v => (v>=0?'+':'') + Number(v).toFixed(2);
+const fmtBps = v => v==null ? '—' : (v>=0?'+':'') + Number(v).toFixed(1);
 const cls = v => v>0 ? 'pos' : (v<0 ? 'neg' : 'mut');
-const sigClass = s => s==='GO' ? 'go' : (s==='WATCH' ? 'watch' : 'hold');
-const sigMsg = {
-  GO:  '<b>Edge 回来了。</b>90天 edge 站上阈值且样本充足 —— 值得人工重新评估（注意：实盘多币执行尚未构建）。',
-  WATCH:'<b>有苗头，但别动。</b>Edge 转正但样本不足，可能是短期方差 —— 继续观察它能否持续、样本堆够。',
-  HOLD:'<b>Edge 仍未复活。</b>当前净 edge 不足或为负，<b>不要部署</b>。哨兵会持续测量，等它翻转。',
-};
+const sigCls = s => s==='GO' ? 'go' : (s==='WATCH' ? 'watch' : 'hold');
+const sigColor = s => s==='GO'?'#22c55e':s==='WATCH'?'#f5a623':'#9fb0c3';
+const tsShort = iso => iso ? iso.replace('T',' ').slice(0,16) : '—';
+const usd = v => v>=1e9 ? (v/1e9).toFixed(2)+'B' : v>=1e6 ? (v/1e6).toFixed(0)+'M' : (v/1e3).toFixed(0)+'K';
 
-function tsShort(iso){ return iso ? iso.replace('T',' ').slice(0,16) : '—'; }
+const uniMsg = {
+  GO:  n=>`<b>市场当前有 ${n} 个币具备可交易 edge。</b>下方是按净 edge（各币扣真实滑点）排名的榜单 —— 仍是测量，不自动下单。`,
+  WATCH:n=>`<b>有 ${n} 个币 edge 转正，但数量少、样本薄。</b>当watchlist 盯着，别急着上。`,
+  HOLD:'<b>当前没有币越过可交易门槛。</b>下方仍给出相对排名（谁最不差），但净 edge 不足 —— 不要部署。',
+};
 
 async function load(){
   let st, hist;
   try {
     const r = await fetch('/api/edge-monitor/status');
-    if (r.status === 404){ throw new Error('监测器还没跑过 —— 等待第一次运行（每小时一次）后自动出现。'); }
+    if (r.status === 404) throw new Error('监测器还没跑过 —— 等待第一次运行后自动出现。');
     if (!r.ok) throw new Error('状态接口 ' + r.status);
     st = await r.json();
     hist = await (await fetch('/api/edge-monitor/history?limit=1000')).json();
@@ -151,102 +135,122 @@ async function load(){
   }
   document.getElementById('err').style.display='none';
   document.getElementById('content').style.display='block';
-
-  const sig = st.signal;
-  document.getElementById('banner').className = 'banner ' + sigClass(sig);
-  const badge = document.getElementById('sigbadge');
-  badge.className = 'sigbadge ' + sigClass(sig); badge.textContent = sig;
-  document.getElementById('sigmsg').innerHTML = sigMsg[sig] || '';
-
-  const w = st.windows || {};
-  const keys = Object.keys(w).map(Number).sort((a,b)=>a-b);
-  const longK = keys[keys.length-1], midK = keys[Math.floor(keys.length/2)];
-  const e90 = w[longK]?.edge_bps ?? 0, e60 = w[midK]?.edge_bps ?? 0;
-  const kE90 = document.getElementById('k-e90'); kE90.textContent = fmtBps(e90); kE90.className='value '+cls(e90);
-  const kE60 = document.getElementById('k-e60'); kE60.textContent = fmtBps(e60); kE60.className='value '+cls(e60);
-  document.getElementById('k-through').textContent = tsShort(st.data_through);
-  document.getElementById('k-thr').textContent = '+' + (st.config?.go_threshold_bps ?? 2) + ' bps';
   document.getElementById('lastcheck').textContent = '上次检查: ' + tsShort(st.checked_at) + ' UTC · 自动刷新';
 
-  // windows table
-  document.getElementById('windows').innerHTML = keys.map(d=>{
-    const x = w[d];
-    return `<tr><td>trailing ${d}d</td>
-      <td class="mono ${cls(x.edge_bps)}">${fmtBps(x.edge_bps)}</td>
-      <td>${(x.win_rate*100).toFixed(0)}%</td>
-      <td>${(x.max_drawdown*100).toFixed(1)}%</td>
-      <td class="mono ${cls(x.sharpe)}">${(x.sharpe>=0?'+':'')+x.sharpe.toFixed(2)}</td>
-      <td>${x.closing_trades}</td></tr>`;
-  }).join('');
+  const sig = st.signal;
+  document.getElementById('banner').className = 'banner ' + sigCls(sig);
+  const badge = document.getElementById('sigbadge');
+  badge.className = 'sigbadge ' + sigCls(sig); badge.textContent = sig;
 
-  // freshness
-  const fr = st.data_freshness || {};
-  const nowMs = Date.now();
-  document.getElementById('freshness').innerHTML = Object.keys(fr).map(sym=>{
-    const f = fr[sym];
-    const lastMs = f.last_bar ? Date.parse(f.last_bar) : 0;
-    const ageH = lastMs ? (nowMs-lastMs)/3.6e6 : 999;
-    const ok = ageH <= 2;
-    return `<tr><td>${sym}</td><td>${f.bars}</td><td class="mono">${tsShort(f.last_bar)}</td>
-      <td class="${ok?'fresh':'stale'}">${ok?'● 新鲜':'● '+ageH.toFixed(0)+'h 前'}</td></tr>`;
-  }).join('');
+  if (st.mode === 'universe') renderUniverse(st, hist);
+  else renderBasket(st, hist);
+}
 
-  // runs history (newest first)
-  const rows = (hist||[]).slice().reverse().slice(0,40);
-  document.getElementById('runs').innerHTML = rows.map(h=>{
-    const g = h.signal;
-    const gc = g==='GO'?'pos':(g==='WATCH'?'watch':'mut');
-    const e=(k)=> h[k]!==undefined ? `<span class="mono ${cls(h[k])}">${fmtBps(h[k])}</span>` : '—';
-    return `<tr><td class="mono">${tsShort(h.checked_at)}</td>
-      <td><b class="${gc}" style="color:${g==='GO'?'#22c55e':g==='WATCH'?'#f5a623':'#9fb0c3'}">${g}</b></td>
-      <td>${e('edge_90d')}</td><td>${e('edge_60d')}</td><td>${e('edge_30d')}</td>
-      <td>${h.n_long ?? '—'}</td></tr>`;
-  }).join('');
-
-  // config
+function renderUniverse(st, hist){
   const c = st.config || {};
-  const s = c.struct || {};
+  const top = st.top_symbols || [];
+  document.getElementById('sigmsg').innerHTML = (typeof uniMsg[st.signal]==='function' ? uniMsg[st.signal](st.n_positive) : uniMsg[st.signal]) || '';
+
+  const top1 = top[0];
+  document.getElementById('kpis').innerHTML = [
+    ['可交易币数', `<span class="${st.n_positive>0?'pos':'mut'}">${st.n_positive}</span> / ${st.n_analyzed}`],
+    ['扫描币池', `${c.universe_size||'—'} 币`],
+    ['榜首', top1 ? `<span class="sym">${top1.symbol}</span> <span class="${cls(top1.edge_bps)}">${fmtBps(top1.edge_bps)}</span>` : '—'],
+    ['数据截至', `<span class="mut" style="font-size:15px">${tsShort(st.data_through)}</span>`],
+  ].map(([l,v])=>`<div class="kpi"><div class="label">${l}</div><div class="value" style="font-size:20px">${v}</div></div>`).join('');
+
+  document.getElementById('rankTitle').textContent = `分析 · Top ${top.length} 币种（按 ${c.ranked_on_days||90} 天净 Edge 排名）`;
+  document.getElementById('rankHint').innerHTML =
+    `每美元成交净收益（bps，已按各币流动性档扣真实滑点，仅高波动 regime 开仓）。可交易门槛：edge ≥ +${c.go_threshold_bps} bps 且 ≥ ${c.min_symbol_trades} 笔。`;
+  document.getElementById('rankHead').innerHTML =
+    '<tr><th>#</th><th>币种</th><th>Edge (bps)</th><th>胜率</th><th>成交数</th><th>滑点</th><th>24h量排名</th><th>24h量</th></tr>';
+  document.getElementById('rankBody').innerHTML = top.map((r,i)=>{
+    const ok = r.edge_bps >= (c.go_threshold_bps||2) && r.closing_trades >= (c.min_symbol_trades||30);
+    return `<tr>
+      <td class="rankcell">${i+1}</td>
+      <td class="sym">${r.symbol} ${ok?'<span class="pill" style="color:#22c55e">可交易</span>':''}</td>
+      <td class="mono ${cls(r.edge_bps)}" style="font-weight:600">${fmtBps(r.edge_bps)}</td>
+      <td>${(r.win_rate*100).toFixed(0)}%</td>
+      <td>${r.closing_trades}</td>
+      <td class="mono">${r.slip_bps}bps</td>
+      <td class="mut">#${r.vol_rank}</td>
+      <td class="mono mut">${usd(r.vol_usd)}</td></tr>`;
+  }).join('') || '<tr><td colspan="8" class="mut">无足够历史的币</td></tr>';
+
+  // collect + config
+  document.getElementById('collect').innerHTML = [
+    ['交易所', (c.exchange||'okx').toUpperCase()],
+    ['币池规模', (c.universe_size||'—')+' 币 (按24h USD量取前N)'],
+    ['有足够历史', st.n_analyzed+' 币'],
+    ['排名窗口', (c.ranked_on_days||90)+' 天'],
+    ['数据截至', tsShort(st.data_through)],
+    ['上次检查', tsShort(st.checked_at)],
+  ].map(([k,v])=>`<div><span class="k">${k}</span><span class="v">${v}</span></div>`).join('');
+  const s = c.struct||{};
   document.getElementById('cfg').innerHTML = [
     ['结构', `th${s.threshold} tp${s.tp_pct} sl${s.sl_pct} H${s.time_stop_bars}`],
-    ['币池', (c.symbols||[]).join(', ')],
-    ['滑点假设', (c.slippage_bps??'')+' bps/边'],
-    ['GO 阈值', '+'+(c.go_threshold_bps??'')+' bps (90d)'],
-    ['最小样本', (c.min_trades??'')+' 笔'],
+    ['滑点', c.slippage||'按流动性分档'],
+    ['可交易门槛', `edge ≥ +${c.go_threshold_bps} bps`],
+    ['最小样本/币', (c.min_symbol_trades||'')+' 笔'],
+    ['GO 条件', `≥ ${c.go_count} 个可交易币`],
     ['波动率闸门', c.regime||''],
     ['周期', c.interval||'1h'],
-    ['调度', '每小时一次 (systemd timer)'],
+    ['调度', '每小时一次'],
   ].map(([k,v])=>`<div><span class="k">${k}</span><span class="v">${v}</span></div>`).join('');
 
-  // chart: edge over time
-  drawChart(hist||[], c.go_threshold_bps ?? 2);
+  // run history
+  document.getElementById('runHead').innerHTML =
+    '<tr><th>时间 (UTC)</th><th>信号</th><th>可交易数</th><th>分析数</th><th>榜首</th><th>榜首 Edge</th></tr>';
+  const rows = (hist||[]).slice().reverse().slice(0,40);
+  document.getElementById('runBody').innerHTML = rows.map(h=>`<tr>
+    <td class="mono">${tsShort(h.checked_at)}</td>
+    <td><b style="color:${sigColor(h.signal)}">${h.signal}</b></td>
+    <td>${h.n_positive ?? '—'}</td><td class="mut">${h.n_analyzed ?? '—'}</td>
+    <td class="sym">${h.top1_symbol ?? '—'}</td>
+    <td class="mono ${cls(h.top1_edge)}">${fmtBps(h.top1_edge)}</td></tr>`).join('');
+
+  drawUniChart(hist||[], c.go_threshold_bps ?? 2);
 }
 
 let chart;
-function drawChart(hist, thr){
+function drawUniChart(hist, thr){
   if(!chart) chart = echarts.init(document.getElementById('chart'));
   const x = hist.map(h=>tsShort(h.checked_at));
-  const mk = (k)=> hist.map(h=> h[k]!==undefined ? h[k] : null);
   chart.setOption({
-    backgroundColor:'transparent',
-    tooltip:{trigger:'axis'},
-    legend:{data:['90天','60天','30天'], textStyle:{color:'#889'}, top:0},
-    grid:{left:44, right:16, top:34, bottom:40},
-    xAxis:{type:'category', data:x, axisLabel:{color:'#667', fontSize:10},
-           axisLine:{lineStyle:{color:'#334'}}},
-    yAxis:{type:'value', name:'edge bps', nameTextStyle:{color:'#667'},
-           axisLabel:{color:'#667'}, splitLine:{lineStyle:{color:'#1c2635'}}},
+    backgroundColor:'transparent', tooltip:{trigger:'axis'},
+    legend:{data:['可交易币数','榜首 Edge'], textStyle:{color:'#889'}, top:0},
+    grid:{left:44, right:52, top:34, bottom:40},
+    xAxis:{type:'category', data:x, axisLabel:{color:'#667',fontSize:10}, axisLine:{lineStyle:{color:'#334'}}},
+    yAxis:[
+      {type:'value', name:'可交易币数', nameTextStyle:{color:'#667'}, axisLabel:{color:'#667'}, splitLine:{lineStyle:{color:'#1c2635'}}},
+      {type:'value', name:'edge bps', nameTextStyle:{color:'#667'}, position:'right', axisLabel:{color:'#667'}, splitLine:{show:false}},
+    ],
     series:[
-      {name:'90天', type:'line', data:mk('edge_90d'), smooth:true, symbol:'none',
-       lineStyle:{width:2.5, color:'#00d4aa'},
-       markLine:{silent:true, symbol:'none', data:[
-         {yAxis:thr, lineStyle:{color:'#22c55e', type:'dashed'}, label:{formatter:'GO +'+thr, color:'#22c55e'}},
-         {yAxis:0, lineStyle:{color:'#556', type:'solid'}, label:{show:false}}
-       ]}},
-      {name:'60天', type:'line', data:mk('edge_60d'), smooth:true, symbol:'none', lineStyle:{width:1.4, color:'#f5a623'}},
-      {name:'30天', type:'line', data:mk('edge_30d'), smooth:true, symbol:'none', lineStyle:{width:1.2, color:'#6b8cae'}},
+      {name:'可交易币数', type:'bar', data:hist.map(h=>h.n_positive), itemStyle:{color:'#2b4a63'}, yAxisIndex:0},
+      {name:'榜首 Edge', type:'line', data:hist.map(h=>h.top1_edge), smooth:true, symbol:'none',
+       lineStyle:{width:2.5,color:'#00d4aa'}, yAxisIndex:1,
+       markLine:{silent:true,symbol:'none',data:[{yAxis:thr,lineStyle:{color:'#22c55e',type:'dashed'},label:{formatter:'+'+thr,color:'#22c55e'}}]}},
     ],
   });
 }
+
+// ── basket-mode fallback (pre-universe status shape) ──
+function renderBasket(st, hist){
+  const w = st.windows || {}; const keys = Object.keys(w).map(Number).sort((a,b)=>a-b);
+  const longK = keys[keys.length-1] || 90;
+  document.getElementById('sigmsg').innerHTML = '固定币篮模式。' + (st.signal==='HOLD'?'当前 edge 不足。':'');
+  document.getElementById('kpis').innerHTML = keys.map(d=>`<div class="kpi"><div class="label">${d}天 Edge</div><div class="value ${cls(w[d].edge_bps)}">${fmtBps(w[d].edge_bps)}</div></div>`).join('') +
+    `<div class="kpi"><div class="label">数据截至</div><div class="value mut" style="font-size:15px">${tsShort(st.data_through)}</div></div>`;
+  document.getElementById('rankTitle').textContent = '分析 · 滚动 Edge';
+  document.getElementById('rankHint').textContent = '固定币篮的滚动窗口 edge。';
+  document.getElementById('rankHead').innerHTML = '<tr><th>窗口</th><th>Edge</th><th>胜率</th><th>回撤</th><th>Sharpe</th><th>成交</th></tr>';
+  document.getElementById('rankBody').innerHTML = keys.map(d=>{const x=w[d];return `<tr><td>trailing ${d}d</td><td class="mono ${cls(x.edge_bps)}">${fmtBps(x.edge_bps)}</td><td>${(x.win_rate*100).toFixed(0)}%</td><td>${(x.max_drawdown*100).toFixed(1)}%</td><td class="mono">${x.sharpe.toFixed(2)}</td><td>${x.closing_trades}</td></tr>`;}).join('');
+  document.getElementById('collect').innerHTML = '';
+  document.getElementById('cfg').innerHTML = '';
+  document.getElementById('runHead').innerHTML = '<tr><th>时间</th><th>信号</th><th>90天</th></tr>';
+  document.getElementById('runBody').innerHTML = (hist||[]).slice().reverse().slice(0,40).map(h=>`<tr><td class="mono">${tsShort(h.checked_at)}</td><td style="color:${sigColor(h.signal)}">${h.signal}</td><td class="mono ${cls(h.edge_90d)}">${fmtBps(h.edge_90d)}</td></tr>`).join('');
+}
+
 window.addEventListener('resize', ()=> chart && chart.resize());
 load();
 setInterval(load, 60000);

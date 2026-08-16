@@ -10,10 +10,10 @@ User=ubuntu
 WorkingDirectory=/home/ubuntu/crypto_backtest
 # ---------------------------------------------
 ExecStart=/home/ubuntu/crypto_backtest/scripts/run_edge_monitor.sh
-# Optional: fire an alert when the edge revives (GO). Example webhook:
+# Universe-scan mode: rank the top-200 OKX coins and surface the top-20 by edge.
+Environment=EDGE_MONITOR_ARGS=--universe-file data/universe.json --top-fetch 200 --top-show 20
+# Optional: fire an alert on a GO. Example webhook:
 # Environment=EDGE_ALERT_CMD=curl -fsS -X POST https://your-webhook -d "edge revived"
-# Optional: override monitor args, e.g. stricter slippage:
-# Environment=EDGE_MONITOR_ARGS=--slippage-bps 4
 TimeoutStartSec=1200
 Nice=10
 

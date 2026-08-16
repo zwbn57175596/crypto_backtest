@@ -24,3 +24,4 @@ data/*.key
 .codex
 data/edge_monitor_status.json
 data/edge_monitor_history.jsonl
+data/universe.json
