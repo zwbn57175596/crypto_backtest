@@ -11,7 +11,8 @@ WorkingDirectory=/home/ubuntu/crypto_backtest
 # ---------------------------------------------
 ExecStart=/home/ubuntu/crypto_backtest/scripts/run_edge_monitor.sh
 # Universe-scan mode: rank the top-200 OKX coins and surface the top-20 by edge.
-Environment=EDGE_MONITOR_ARGS=--universe-file data/universe.json --top-fetch 200 --top-show 20
+# NB: quote the whole VAR=VALUE — systemd splits Environment= on spaces otherwise.
+Environment="EDGE_MONITOR_ARGS=--universe-file data/universe.json --top-fetch 200 --top-show 20"
 # Optional: fire an alert on a GO. Example webhook:
 # Environment=EDGE_ALERT_CMD=curl -fsS -X POST https://your-webhook -d "edge revived"
 TimeoutStartSec=1200
