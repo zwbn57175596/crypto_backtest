@@ -110,7 +110,16 @@ const fmtBps = v => v==null ? '—' : (v>=0?'+':'') + Number(v).toFixed(1);
 const cls = v => v>0 ? 'pos' : (v<0 ? 'neg' : 'mut');
 const sigCls = s => s==='GO' ? 'go' : (s==='WATCH' ? 'watch' : 'hold');
 const sigColor = s => s==='GO'?'#22c55e':s==='WATCH'?'#f5a623':'#9fb0c3';
-const tsShort = iso => iso ? iso.replace('T',' ').slice(0,16) : '—';
+// 显示为北京时间 (UTC+8)。数据内部是 UTC；这里统一转换。
+function tsShort(iso){
+  if(!iso) return '—';
+  const d = new Date(iso);
+  if(isNaN(d)) return iso.replace('T',' ').slice(0,16);
+  const p = new Intl.DateTimeFormat('zh-CN', {timeZone:'Asia/Shanghai', year:'numeric',
+    month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false}).formatToParts(d);
+  const g = t => (p.find(x=>x.type===t)||{}).value;
+  return `${g('year')}-${g('month')}-${g('day')} ${g('hour')}:${g('minute')}`;
+}
 const usd = v => v>=1e9 ? (v/1e9).toFixed(2)+'B' : v>=1e6 ? (v/1e6).toFixed(0)+'M' : (v/1e3).toFixed(0)+'K';
 
 const uniMsg = {
@@ -135,7 +144,7 @@ async function load(){
   }
   document.getElementById('err').style.display='none';
   document.getElementById('content').style.display='block';
-  document.getElementById('lastcheck').textContent = '上次检查: ' + tsShort(st.checked_at) + ' UTC · 自动刷新';
+  document.getElementById('lastcheck').textContent = '上次检查: ' + tsShort(st.checked_at) + ' 北京时间 · 自动刷新';
 
   const sig = st.signal;
   document.getElementById('banner').className = 'banner ' + sigCls(sig);
@@ -200,7 +209,7 @@ function renderUniverse(st, hist){
 
   // run history
   document.getElementById('runHead').innerHTML =
-    '<tr><th>时间 (UTC)</th><th>信号</th><th>可交易数</th><th>分析数</th><th>榜首</th><th>榜首 Edge</th></tr>';
+    '<tr><th>时间 (北京)</th><th>信号</th><th>可交易数</th><th>分析数</th><th>榜首</th><th>榜首 Edge</th></tr>';
   const rows = (hist||[]).slice().reverse().slice(0,40);
   document.getElementById('runBody').innerHTML = rows.map(h=>`<tr>
     <td class="mono">${tsShort(h.checked_at)}</td>
