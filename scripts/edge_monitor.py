@@ -178,6 +178,8 @@ def measure(db_path: str, symbols: list[str], regime: dict, start_ms: int, end_m
         "max_drawdown": round(rep["max_drawdown"], 4),
         "sharpe": round(rep["sharpe_ratio"], 2),
         "closing_trades": sum(1 for t in trades if t["pnl"] != 0.0),
+        "net_total": net,          # raw net-of-fee pnl (for combining sub-windows)
+        "open_notional": opened,   # raw opened notional (for combining sub-windows)
     }
 
 
@@ -209,18 +211,37 @@ def load_or_refresh_universe(path: str, top: int, max_age_hours: float) -> list[
     return data["symbols"]
 
 
-def rank_universe(db_path: str, universe: list[dict], regime: dict, start_ms: int, end_ms: int,
-                  min_show_trades: int) -> list[dict]:
-    """Per-coin vol-filtered edge over the window, at each coin's own slippage tier, ranked desc."""
+def rank_universe(db_path: str, universe: list[dict], regime: dict, end_ms: int,
+                  window_days: int, min_show_trades: int) -> list[dict]:
+    """Per-coin vol-filtered edge (at each coin's slippage tier), ranked desc.
+
+    Split-half PERSISTENCE test: the window is halved and each coin measured on
+    the older half and the recent half separately. `persistent` = positive in
+    BOTH halves. Luck rarely survives both halves, so this guards the tradeable
+    flag against the small-sample / multiple-testing false positives that a
+    single 90d window on ~25 trades produces across a 200-coin scan.
+    """
+    half = max(window_days // 2, 1)
+    start_ms = end_ms - window_days * 86_400_000
+    mid_ms = end_ms - half * 86_400_000
     ranked = []
     for u in universe:
-        m = measure(db_path, [u["symbol"]], regime, start_ms, end_ms, u["slip_bps"])
-        if m["closing_trades"] < min_show_trades:
+        older = measure(db_path, [u["symbol"]], regime, start_ms, mid_ms, u["slip_bps"])
+        recent = measure(db_path, [u["symbol"]], regime, mid_ms, end_ms, u["slip_bps"])
+        net = older["net_total"] + recent["net_total"]
+        notl = older["open_notional"] + recent["open_notional"]
+        trades = older["closing_trades"] + recent["closing_trades"]
+        if trades < min_show_trades:
             continue
+        edge_full = (net / notl * 1e4) if notl > 0 else 0.0
+        win = ((older["win_rate"] * older["closing_trades"]
+                + recent["win_rate"] * recent["closing_trades"]) / trades) if trades else 0.0
         ranked.append({
             "symbol": u["symbol"], "vol_rank": u["rank"], "vol_usd": u["vol_usd"],
-            "slip_bps": u["slip_bps"], "edge_bps": m["edge_bps"], "win_rate": m["win_rate"],
-            "sharpe": m["sharpe"], "closing_trades": m["closing_trades"],
+            "slip_bps": u["slip_bps"], "edge_bps": round(edge_full, 2),
+            "edge_recent": recent["edge_bps"], "edge_older": older["edge_bps"],
+            "persistent": older["edge_bps"] > 0 and recent["edge_bps"] > 0,
+            "win_rate": round(win, 4), "closing_trades": trades,
         })
     ranked.sort(key=lambda r: r["edge_bps"], reverse=True)
     return ranked
@@ -238,11 +259,13 @@ def run_universe_mode(args, windows) -> int:
 
     window = windows[-1]  # rank on the longest trailing window (default 90d)
     regime = build_regime(args.db)
-    ranked = rank_universe(args.db, universe, regime, end_ms - window * 86_400_000, end_ms,
-                           min_show_trades=15)
+    ranked = rank_universe(args.db, universe, regime, end_ms, window, min_show_trades=15)
     top = ranked[:args.top_show]
+    # "tradeable" now REQUIRES split-half persistence (positive in both halves) —
+    # this is what keeps a 200-coin scan from crying GO on small-sample luck.
     positive = [r for r in ranked
-                if r["edge_bps"] >= args.go_threshold_bps and r["closing_trades"] >= args.min_symbol_trades]
+                if r["edge_bps"] >= args.go_threshold_bps and r["persistent"]
+                and r["closing_trades"] >= args.min_symbol_trades]
     n_pos = len(positive)
     signal = "GO" if n_pos >= args.go_count else ("WATCH" if n_pos >= 1 else "HOLD")
 
@@ -254,7 +277,8 @@ def run_universe_mode(args, windows) -> int:
                    "ranked_on_days": window, "go_threshold_bps": args.go_threshold_bps,
                    "min_symbol_trades": args.min_symbol_trades, "go_count": args.go_count,
                    "interval": INTERVAL, "regime": "BTC 7d realized vol > ~60d EMA",
-                   "slippage": "per-coin by liquidity tier (2/3/4.5/6 bps)"},
+                   "slippage": "per-coin by liquidity tier (2/3/4.5/6 bps)",
+                   "tradeable_rule": "edge≥阈值 且 前后45天两半都为正(持续性) 且 样本足"},
         "n_analyzed": len(ranked), "n_positive": n_pos,
         "top_symbols": top,
         "signal": signal,
@@ -275,12 +299,14 @@ def run_universe_mode(args, windows) -> int:
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     print(f"=== Universe scan @ {stamp} (data through {status['data_through'][:10]}) ===")
     print(f"  {len(symbols)} coins fetched · {len(ranked)} with enough history · "
-          f"{n_pos} with tradeable edge (>= +{args.go_threshold_bps}bps, {args.min_symbol_trades}+ trades)")
+          f"{n_pos} tradeable (edge>=+{args.go_threshold_bps}bps AND positive in both 45d halves AND "
+          f"{args.min_symbol_trades}+ trades)")
     print(f"  --- top {min(args.top_show, len(top))} by {window}d net edge (each at its own slippage) ---")
     for i, r in enumerate(top, 1):
-        print(f"   {i:>2}. {r['symbol']:<13} edge={r['edge_bps']:+6.1f}bps  win={r['win_rate']:.0%}  "
-              f"n={r['closing_trades']:>4}  slip={r['slip_bps']}bps  volrank#{r['vol_rank']}")
-    print(f"  SIGNAL: {signal}  ({n_pos} tradeable coins right now)")
+        mark = "✓持续" if r["persistent"] else "  单窗"
+        print(f"   {i:>2}. {r['symbol']:<13} edge={r['edge_bps']:+6.1f}bps ({mark} 前{r['edge_older']:+.0f}/近{r['edge_recent']:+.0f}) "
+              f"win={r['win_rate']:.0%}  n={r['closing_trades']:>4}  slip={r['slip_bps']}bps")
+    print(f"  SIGNAL: {signal}  ({n_pos} persistently-tradeable coins right now)")
     if args.json:
         print(json.dumps(status))
     return {"HOLD": 0, "WATCH": 5, "GO": 10}[signal]
@@ -309,8 +335,9 @@ def main() -> int:
     ap.add_argument("--top-show", type=int, default=20, help="How many top coins to surface")
     ap.add_argument("--universe-max-age-hours", type=float, default=24.0,
                     help="Re-fetch the universe list if older than this")
-    ap.add_argument("--go-count", type=int, default=5,
-                    help="Universe GO if >= this many coins have edge>=threshold on enough trades")
+    ap.add_argument("--go-count", type=int, default=8,
+                    help="Universe GO if >= this many coins are persistently tradeable "
+                         "(edge>=threshold, positive in both 45d halves, enough trades)")
     ap.add_argument("--min-symbol-trades", type=int, default=30,
                     help="Per-coin min trades (in the ranking window) to count as a positive/tradeable coin")
     ap.add_argument("--status-file", default=str(Path("data") / "edge_monitor_status.json"))

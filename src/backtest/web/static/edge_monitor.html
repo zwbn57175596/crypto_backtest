@@ -170,21 +170,26 @@ function renderUniverse(st, hist){
 
   document.getElementById('rankTitle').textContent = `分析 · Top ${top.length} 币种（按 ${c.ranked_on_days||90} 天净 Edge 排名）`;
   document.getElementById('rankHint').innerHTML =
-    `每美元成交净收益（bps，已按各币流动性档扣真实滑点，仅高波动 regime 开仓）。可交易门槛：edge ≥ +${c.go_threshold_bps} bps 且 ≥ ${c.min_symbol_trades} 笔。`;
+    `每美元成交净收益（bps，已按各币流动性档扣真实滑点，仅高波动 regime 开仓）。<b style="color:#b8c2cc">"可交易"需通过持续性检验</b>：把 ${c.ranked_on_days||90} 天切成前/后两半，两半都为正才算数（防小样本运气）。门槛：edge ≥ +${c.go_threshold_bps} bps、持续、≥ ${c.min_symbol_trades} 笔。<b style="color:#f5a623">榜单本身是小样本观察名单，非下单清单。</b>`;
   document.getElementById('rankHead').innerHTML =
-    '<tr><th>#</th><th>币种</th><th>Edge (bps)</th><th>胜率</th><th>成交数</th><th>滑点</th><th>24h量排名</th><th>24h量</th></tr>';
+    '<tr><th>#</th><th>币种</th><th>Edge (bps)</th><th>持续(前/近45d)</th><th>胜率</th><th>成交数</th><th>滑点</th><th>量排名</th><th>24h量</th></tr>';
   document.getElementById('rankBody').innerHTML = top.map((r,i)=>{
-    const ok = r.edge_bps >= (c.go_threshold_bps||2) && r.closing_trades >= (c.min_symbol_trades||30);
+    const ok = r.edge_bps >= (c.go_threshold_bps||2) && r.persistent && r.closing_trades >= (c.min_symbol_trades||30);
+    const pers = (r.edge_older!=null && r.edge_recent!=null)
+      ? `<span class="mono ${cls(r.edge_older)}">${fmtBps(r.edge_older)}</span> / <span class="mono ${cls(r.edge_recent)}">${fmtBps(r.edge_recent)}</span> `
+        + (r.persistent ? '<span style="color:#22c55e">✓</span>' : '<span style="color:#ef4444">✗</span>')
+      : '—';
     return `<tr>
       <td class="rankcell">${i+1}</td>
       <td class="sym">${r.symbol} ${ok?'<span class="pill" style="color:#22c55e">可交易</span>':''}</td>
       <td class="mono ${cls(r.edge_bps)}" style="font-weight:600">${fmtBps(r.edge_bps)}</td>
+      <td>${pers}</td>
       <td>${(r.win_rate*100).toFixed(0)}%</td>
       <td>${r.closing_trades}</td>
       <td class="mono">${r.slip_bps}bps</td>
       <td class="mut">#${r.vol_rank}</td>
       <td class="mono mut">${usd(r.vol_usd)}</td></tr>`;
-  }).join('') || '<tr><td colspan="8" class="mut">无足够历史的币</td></tr>';
+  }).join('') || '<tr><td colspan="9" class="mut">无足够历史的币</td></tr>';
 
   // collect + config
   document.getElementById('collect').innerHTML = [
