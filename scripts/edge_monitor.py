@@ -23,7 +23,7 @@ import math
 import sqlite3
 import sys
 from collections import deque
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from backtest.mean_reversion import MRParams
@@ -247,6 +247,72 @@ def rank_universe(db_path: str, universe: list[dict], regime: dict, end_ms: int,
     return ranked
 
 
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def compute_stability(history_rows: list[dict], now: datetime, week_days: int = 7) -> dict:
+    """Per-symbol day-streaks + week-over-week churn of the tradeable set.
+
+    Buckets history rows by Beijing calendar day (last run of each day wins).
+    Rows predating the `tradeable_symbols` field are skipped, not treated as an
+    empty day — a day with no data breaks a streak instead of silently
+    extending it (avoids overclaiming stability across an unmonitored gap).
+    """
+    day_sets: dict[date, set[str]] = {}
+    day_latest_ts: dict[date, datetime] = {}
+    for row in history_rows:
+        symbols = row.get("tradeable_symbols")
+        if symbols is None:
+            continue
+        ts = datetime.fromisoformat(row["checked_at"]).astimezone(BEIJING_TZ)
+        day = ts.date()
+        if day not in day_latest_ts or ts > day_latest_ts[day]:
+            day_latest_ts[day] = ts
+            day_sets[day] = set(symbols)
+
+    if not day_sets:
+        return {
+            "as_of_day": None,
+            "days_tracked": 0,
+            "symbol_streaks": {},
+            "week_over_week": {"available": False, "prev_week_day": None,
+                                "overlap": None, "added": [], "dropped": []},
+        }
+
+    as_of_day = max(day_sets)
+    today_set = day_sets[as_of_day]
+
+    symbol_streaks = {}
+    for symbol in today_set:
+        streak = 0
+        d = as_of_day
+        while d in day_sets and symbol in day_sets[d]:
+            streak += 1
+            d = d - timedelta(days=1)
+        symbol_streaks[symbol] = streak
+
+    prev_day = as_of_day - timedelta(days=week_days)
+    if prev_day in day_sets:
+        prev_set = day_sets[prev_day]
+        week_over_week = {
+            "available": True,
+            "prev_week_day": prev_day.isoformat(),
+            "overlap": len(today_set & prev_set),
+            "added": sorted(today_set - prev_set),
+            "dropped": sorted(prev_set - today_set),
+        }
+    else:
+        week_over_week = {"available": False, "prev_week_day": None,
+                           "overlap": None, "added": [], "dropped": []}
+
+    return {
+        "as_of_day": as_of_day.isoformat(),
+        "days_tracked": len(day_sets),
+        "symbol_streaks": symbol_streaks,
+        "week_over_week": week_over_week,
+    }
+
+
 def run_universe_mode(args, windows) -> int:
     universe = load_or_refresh_universe(args.universe_file, args.top_fetch, args.universe_max_age_hours)
     symbols = [u["symbol"] for u in universe]
@@ -268,11 +334,27 @@ def run_universe_mode(args, windows) -> int:
                 and r["closing_trades"] >= args.min_symbol_trades]
     n_pos = len(positive)
     signal = "GO" if n_pos >= args.go_count else ("WATCH" if n_pos >= 1 else "HOLD")
+    tradeable_symbols = sorted(r["symbol"] for r in positive)
+
+    checked_at = datetime.now(timezone.utc).isoformat()
+    hist = {"checked_at": checked_at, "data_through":
+            datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc).isoformat(),
+            "signal": signal, "n_positive": n_pos, "n_analyzed": len(ranked),
+            "top1_symbol": top[0]["symbol"] if top else None,
+            "top1_edge": top[0]["edge_bps"] if top else None,
+            "ranked_on_days": window, "tradeable_symbols": tradeable_symbols}
+
+    hp = Path(args.history_file)
+    prior_rows = []
+    if hp.exists():
+        with hp.open() as f:
+            prior_rows = [json.loads(line) for line in f if line.strip()]
+    stability = compute_stability([*prior_rows, hist], datetime.now(timezone.utc))
 
     status = {
         "mode": "universe",
-        "checked_at": datetime.now(timezone.utc).isoformat(),
-        "data_through": datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc).isoformat(),
+        "checked_at": checked_at,
+        "data_through": hist["data_through"],
         "config": {"struct": STRUCT, "exchange": EXCHANGE, "universe_size": len(symbols),
                    "ranked_on_days": window, "go_threshold_bps": args.go_threshold_bps,
                    "min_symbol_trades": args.min_symbol_trades, "go_count": args.go_count,
@@ -282,16 +364,11 @@ def run_universe_mode(args, windows) -> int:
         "n_analyzed": len(ranked), "n_positive": n_pos,
         "top_symbols": top,
         "signal": signal,
+        "stability": stability,
     }
     Path(args.status_file).parent.mkdir(parents=True, exist_ok=True)
     Path(args.status_file).write_text(json.dumps(status, indent=2))
 
-    hist = {"checked_at": status["checked_at"], "data_through": status["data_through"],
-            "signal": signal, "n_positive": n_pos, "n_analyzed": len(ranked),
-            "top1_symbol": top[0]["symbol"] if top else None,
-            "top1_edge": top[0]["edge_bps"] if top else None,
-            "ranked_on_days": window}
-    hp = Path(args.history_file)
     hp.parent.mkdir(parents=True, exist_ok=True)
     with hp.open("a") as f:
         f.write(json.dumps(hist) + "\n")
