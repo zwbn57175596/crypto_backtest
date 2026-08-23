@@ -1,0 +1,22 @@
+[Unit]
+Description=Crypto MR strategy edge health monitor (measurement only, never trades)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# --- LXC 203 (app-server, 192.168.119.196) ---
+User=ubuntu
+WorkingDirectory=/home/ubuntu/crypto_backtest
+# ---------------------------------------------
+ExecStart=/home/ubuntu/crypto_backtest/scripts/run_edge_monitor.sh
+# Universe-scan mode: rank the top-200 OKX coins and surface the top-20 by edge.
+# NB: quote the whole VAR=VALUE — systemd splits Environment= on spaces otherwise.
+Environment="EDGE_MONITOR_ARGS=--universe-file data/universe.json --top-fetch 200 --top-show 20"
+# Optional: fire an alert on a GO. Example webhook:
+# Environment=EDGE_ALERT_CMD=curl -fsS -X POST https://your-webhook -d "edge revived"
+TimeoutStartSec=1200
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
