@@ -1,0 +1,20 @@
+[Unit]
+Description=Funding carry engine (OKX spot long + USDT-perp short, 1.0x)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/crypto_backtest
+EnvironmentFile=/home/ubuntu/.secrets/carry.env
+Environment=PYTHONPATH=/home/ubuntu/crypto_backtest/src
+ExecStart=/home/ubuntu/crypto_backtest/.venv/bin/python -m carry \
+    --config /home/ubuntu/crypto_backtest/config/carry.json \
+    --log /home/ubuntu/crypto_backtest/live_state/carry.log run
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
