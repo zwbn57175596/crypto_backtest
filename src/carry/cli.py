@@ -15,9 +15,10 @@ from carry.bootstrap import exposure_report, load_state_or_halt, reconcile
 from carry.config import CarryConfig
 from carry.engine import Engine
 from carry.exchange import Exchange
+from carry.hedge import HedgeStatus, check_hedge
 from carry.preflight import preflight
 from carry.runner import InstanceLock, Runner
-from carry.state import save_state
+from carry.state import CarryState, load_state, save_state
 from carry.types import DEFAULT_INSTRUMENTS
 
 
@@ -26,11 +27,16 @@ class Clients:
     exchange: Exchange
     account: Any
     public: Any
+    mode: str = "LIVE"                                        # "DEMO" | "LIVE": which OKX environment
+
+
+def _okx_flag(env: Mapping[str, str]) -> str:
+    return "1" if str(env.get("OKX_DEMO", "")).lower() in ("1", "true", "yes") else "0"
 
 
 def load_env_file(path: str | Path) -> dict[str, str]:
     out: dict[str, str] = {}
-    for line in Path(path).read_text().splitlines():
+    for line in Path(path).read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -49,6 +55,9 @@ def load_config(path: str | Path) -> CarryConfig:
     unknown = set(data) - {f.name for f in fields(CarryConfig)}
     if unknown:
         raise ValueError(f"unknown config keys: {sorted(unknown)}")
+    if "state_path" in data and not os.path.isabs(str(data["state_path"])):
+        raise ValueError("state_path must be an absolute path (a relative path would move the state and lock "
+                         f"with the working directory), got {data['state_path']!r}")
     if "coins" in data:
         data["coins"] = tuple(data["coins"])
     return CarryConfig(**data)
@@ -58,7 +67,8 @@ def default_clients(env: Mapping[str, str], cfg: CarryConfig, alert: Callable[[s
     key, secret, phrase = (env.get(k) for k in ("OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE"))
     if not (key and secret and phrase):
         raise SystemExit("OKX_API_KEY / OKX_API_SECRET / OKX_API_PASSPHRASE must be set")
-    flag = "1" if str(env.get("OKX_DEMO", "")).lower() in ("1", "true", "yes") else "0"
+    flag = _okx_flag(env)
+    import httpx
     import okx.Account as Account
     import okx.MarketData as MarketData
     import okx.PublicData as PublicData
@@ -68,9 +78,11 @@ def default_clients(env: Mapping[str, str], cfg: CarryConfig, alert: Callable[[s
     account = Account.AccountAPI(key, secret, phrase, False, flag=flag, debug=False)
     public = PublicData.PublicAPI(flag=flag, debug=False)
     market = MarketData.MarketAPI(flag=flag, debug=False)
+    for client in (trade, account, public, market):            # python-okx clients are httpx.Client subclasses
+        client.timeout = httpx.Timeout(10.0, connect=5.0)
     ex = OkxExchange(trade, account, public, market, DEFAULT_INSTRUMENTS,
                      spot_td_mode=env.get("OKX_SPOT_TD_MODE") or "cash", alert=alert)
-    return Clients(ex, account, public)
+    return Clients(ex, account, public, mode="DEMO" if flag == "1" else "LIVE")
 
 
 class _StopFlag:
@@ -137,9 +149,43 @@ def _engine(clients: Clients, cfg: CarryConfig, alerter: Callable[[str], None],
     else:
         for note in notes:
             out(f"reconcile: {note}")
-    save_state(cfg.state_path, state)
+    try:
+        save_state(cfg.state_path, state)
+    except OSError:
+        _safe_alert(alerter, "[CRITICAL] could not persist startup state")
     return Engine(ex, DEFAULT_INSTRUMENTS, cfg, alerter, state,
                   save=lambda s: save_state(cfg.state_path, s))
+
+
+def _status_state(cfg: CarryConfig, out: Callable[[str], None]) -> CarryState:
+    """Read-only view of the state file: status must never rename, rewrite or alert."""
+    try:
+        return load_state(cfg.state_path)
+    except Exception as e:  # noqa: BLE001
+        out(f"state file unreadable ({type(e).__name__}) \u2014 showing HALTED")
+        return CarryState(mode="HALTED", halted_reason=f"state file unreadable: {type(e).__name__}")
+
+
+def _force_close(eng: Engine, coin: str, clients: Clients, cfg: CarryConfig, out: Callable[[str], None]) -> int:
+    if coin not in cfg.coins:
+        out(f"error: unknown coin {coin!r}")
+        return 1
+    if coin not in eng.state.legs:
+        try:
+            spot, perp = clients.exchange.spot_balance(coin), clients.exchange.swap_contracts(coin)
+            status = check_hedge(spot, perp, DEFAULT_INSTRUMENTS[coin], cfg.drift_tol)
+        except Exception as e:  # noqa: BLE001
+            out(f"error: could not read {coin} holdings ({type(e).__name__})")
+            return 1
+        if status != HedgeStatus.FLAT:
+            out(f"PROBLEM: no recorded leg for {coin} but the exchange holds spot={spot:.8g} perp={perp:.8g} "
+                "contracts \u2014 close it in the OKX UI, then run rearm")
+            return 1
+        out(f"force-close {coin}: nothing to close")
+        return 0
+    ok = eng.force_close(coin)
+    out(f"force-close {coin}: {'ok' if ok else 'FAILED'}")
+    return 0 if ok else 1
 
 
 def _preflight_command(clients: Clients, cfg: CarryConfig, out: Callable[[str], None]) -> int:
@@ -162,7 +208,7 @@ def _preflight_command(clients: Clients, cfg: CarryConfig, out: Callable[[str], 
 def _locked_command(args: argparse.Namespace, clients: Clients, cfg: CarryConfig,
                     alerter: Callable[[str], None], clock: Callable[[], float],
                     sleep: Callable[[float], None], out: Callable[[str], None]) -> int:
-    lock = InstanceLock(cfg.state_path + ".lock")
+    lock = InstanceLock(os.path.abspath(cfg.state_path) + ".lock")
     try:
         lock.acquire()
     except RuntimeError as e:
@@ -182,13 +228,14 @@ def _locked_command(args: argparse.Namespace, clients: Clients, cfg: CarryConfig
             out(f"force-open {args.coin}: {'ok' if ok else 'FAILED'}")
             return 0 if ok else 1
         if args.cmd == "force-close":
-            ok = eng.force_close(args.coin)
-            out(f"force-close {args.coin}: {'ok' if ok else 'FAILED'}")
-            return 0 if ok else 1
+            return _force_close(eng, args.coin, clients, cfg, out)
         stop = _StopFlag(args.max_steps)                       # cmd == "run"
+        _safe_alert(alerter, f"[INFO] carry starting (okx mode: {clients.mode}, coins={list(cfg.coins)}, "
+                             f"state={eng.state.mode}, poll_sec={cfg.poll_sec})")
         old = {s: signal.signal(s, lambda *_: stop.trigger()) for s in (signal.SIGTERM, signal.SIGINT)}
         try:
-            Runner(eng, lambda: exposure_report(clients.exchange, DEFAULT_INSTRUMENTS, cfg, eng.state), alerter,
+            Runner(eng, lambda: f"okx={clients.mode} "
+                   + exposure_report(clients.exchange, DEFAULT_INSTRUMENTS, cfg, eng.state), alerter,
                    cfg, heartbeat_sec=args.heartbeat_sec, clock=clock, sleep=sleep).run(stop)
         finally:
             for s, h in old.items():
@@ -218,18 +265,23 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     alerter = (make_alerter or build_alerter)(env, args.log)
     try:
         if args.cmd == "alert-test":
+            out(f"okx mode: {'DEMO' if _okx_flag(env) == '1' else 'LIVE'}")
             alerter("[INFO] carry alert test")
             out(f"channels: {getattr(alerter, 'channels', [])}")
             return 0
 
-        clients = (make_clients or default_clients)(env, cfg, alerter)
+        try:
+            clients = (make_clients or default_clients)(env, cfg, alerter)
+        except SystemExit as e:                                # e.g. missing OKX credentials
+            out(str(e))
+            return 2
+        out(f"okx mode: {clients.mode}")
 
         if args.cmd == "preflight":
             return _preflight_command(clients, cfg, out)
 
         if args.cmd == "status":
-            state = load_state_or_halt(cfg.state_path, alerter, clock)
-            out(exposure_report(clients.exchange, DEFAULT_INSTRUMENTS, cfg, state))
+            out(exposure_report(clients.exchange, DEFAULT_INSTRUMENTS, cfg, _status_state(cfg, out)))
             return 0
 
         return _locked_command(args, clients, cfg, alerter, clock, sleep, out)

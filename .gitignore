@@ -22,3 +22,9 @@ data/*.key
 
 .codex.worktrees/
 .codex
+
+# carry engine runtime files (state, logs, lock, quarantined corrupt state)
+live_state/carry_state.json*
+live_state/carry.log*
+live_state/*.lock
+live_state/*.corrupt-*

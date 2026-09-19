@@ -252,3 +252,202 @@ def test_startup_halted_state_is_not_overwritten_by_reconcile_success(tmp_path):
     save_state(tmp_path / "state.json", CarryState(mode="HALTED", halted_reason="earlier"))
     assert main(argv + ["run", "--max-steps", "2"], env={}, **kw) == 0
     assert load_state(tmp_path / "state.json").mode == "HALTED" and ex.calls == []
+
+
+# --- fix round 1 -------------------------------------------------------------------
+
+import sys
+import types
+
+import httpx
+
+from carry.cli import default_clients
+from carry.config import CarryConfig
+
+
+def _clients_with_mode(ex, mode):
+    return lambda env, c, a: Clients(ex, FakeAccount(), FakePublic(), mode=mode)
+
+
+# I1: force-close with no recorded leg never trades holdings it has no record of
+@pytest.mark.parametrize("holding", [("spot", 0.01), ("swap", 5.0)])
+def test_force_close_without_recorded_leg_refuses_when_exchange_holds_something(tmp_path, holding):
+    ex, alerts, out, kw, argv = setup(tmp_path)
+    getattr(ex, holding[0])["BTC"] = holding[1]
+    assert main(argv + ["force-close", "BTC"], env={}, **kw) == 1
+    line = next(x for x in out if x.startswith("PROBLEM:"))
+    assert "no recorded leg for BTC" in line and "OKX UI" in line and "rearm" in line
+    assert ex.calls == []                                   # nothing was traded
+
+
+def test_force_close_without_recorded_leg_and_flat_exchange_is_a_noop_success(tmp_path):
+    ex, alerts, out, kw, argv = setup(tmp_path)
+    assert main(argv + ["force-close", "BTC"], env={}, **kw) == 0
+    assert "force-close BTC: nothing to close" in out and ex.calls == []
+
+
+def test_force_close_unknown_coin_is_an_error(tmp_path):
+    ex, alerts, out, kw, argv = setup(tmp_path)
+    assert main(argv + ["force-close", "XRP"], env={}, **kw) == 1
+    assert any(line.startswith("error:") for line in out)
+
+
+# I2: demo vs live is always visible
+@pytest.mark.parametrize("cmd", [["preflight"], ["status"], ["force-open", "BTC", "100"],
+                                 ["force-close", "BTC"], ["rearm"], ["run", "--max-steps", "1"]])
+@pytest.mark.parametrize("mode", ["DEMO", "LIVE"])
+def test_every_command_prints_okx_mode_first(tmp_path, cmd, mode):
+    ex, alerts, out, kw, argv = setup(tmp_path)
+    kw["make_clients"] = _clients_with_mode(ex, mode)
+    main(argv + cmd, env={}, **kw)
+    assert out[0] == f"okx mode: {mode}"
+
+
+def test_clients_default_mode_is_live():
+    assert Clients(None, None, None).mode == "LIVE"
+
+
+def test_alert_test_prints_okx_mode_from_env(tmp_path):
+    ex, alerts, out, kw, argv = setup(tmp_path)
+    assert main(argv + ["alert-test"], env={"OKX_DEMO": "1"}, **kw) == 0
+    assert out[0] == "okx mode: DEMO"
+    out.clear()
+    assert main(argv + ["alert-test"], env={}, **kw) == 0
+    assert out[0] == "okx mode: LIVE"
+
+
+def test_run_startup_alert_and_heartbeat_carry_the_mode(tmp_path):
+    ex, alerts, out, kw, argv = setup(tmp_path)
+    kw["make_clients"] = _clients_with_mode(ex, "DEMO")
+    assert main(argv + ["run", "--max-steps", "1"], env={}, **kw) == 0
+    assert any(a.startswith("[INFO] carry starting (okx mode: DEMO") for a in alerts)
+    assert any(a.startswith("[HEARTBEAT]\nokx=DEMO mode=") for a in alerts)
+
+
+# I4: relative state_path would defeat the lock
+def test_relative_state_path_in_config_file_is_a_config_error(tmp_path):
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps({"state_path": "live_state/x.json"}))
+    out = []
+    assert main(["--config", str(p), "status"], env={}, out=out.append) == 2
+    assert out[0].startswith("config error:") and "absolute" in out[0]
+    with pytest.raises(ValueError):
+        load_config(p)
+    p.write_text(json.dumps({"state_path": str(tmp_path / "x.json")}))
+    assert load_config(p).state_path == str(tmp_path / "x.json")
+
+
+def test_default_relative_state_path_lock_is_resolved_to_an_absolute_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    ex = FakeExchange()
+    out = []
+    kw = dict(make_clients=lambda env, c, a: Clients(ex, FakeAccount(), FakePublic()),
+              make_alerter=lambda env, log: (lambda m: None), out=out.append, sleep=lambda s: None)
+    with InstanceLock(str(tmp_path / "live_state" / "carry_state.json") + ".lock"):
+        assert main(["run", "--max-steps", "1"], env={}, **kw) == 3
+    assert "lock" in "\n".join(out)
+
+
+def test_run_refuses_while_another_process_holds_the_lock(tmp_path):
+    ex, alerts, out, kw, argv = setup(tmp_path)
+    with InstanceLock(str(tmp_path / "state.json") + ".lock"):
+        assert main(argv + ["run", "--max-steps", "1"], env={}, **kw) == 3
+    assert not any(a.startswith("[HEARTBEAT]") for a in alerts)
+
+
+# minors
+def test_startup_save_failure_alerts_and_continues(tmp_path, monkeypatch):
+    def boom(path, state):
+        raise OSError("disk full")
+    monkeypatch.setattr("carry.cli.save_state", boom)
+    ex, alerts, out, kw, argv = setup(tmp_path)
+    assert main(argv + ["run", "--max-steps", "1"], env={}, **kw) == 0
+    assert any("[CRITICAL] could not persist startup state" in a for a in alerts)
+
+
+def test_client_creation_systemexit_prints_message_returns_2_and_flushes(tmp_path):
+    ex, _, out, kw, argv = setup(tmp_path)
+    fa = FlushAlerter()
+
+    def refuse(env, c, a):
+        raise SystemExit("OKX_API_KEY must be set")
+    kw.update(make_alerter=lambda env, log: fa, make_clients=refuse)
+    assert main(argv + ["preflight"], env={}, **kw) == 2
+    assert "OKX_API_KEY must be set" in "\n".join(out) and fa.flushed == 1
+
+
+def test_status_never_mutates_a_corrupt_state_file(tmp_path):
+    ex, alerts, out, kw, argv = setup(tmp_path)
+    p = tmp_path / "state.json"
+    p.write_text("{bad")
+    assert main(argv + ["status"], env={}, **kw) == 0
+    assert p.read_text() == "{bad" and [f.name for f in tmp_path.iterdir() if "corrupt" in f.name] == []
+    text = "\n".join(out)
+    assert "state file unreadable (JSONDecodeError) — showing HALTED" in text and "mode=HALTED" in text
+    assert alerts == []
+
+
+def test_load_env_file_bom_crlf_hash_in_value_export_and_equals(tmp_path):
+    p = tmp_path / "e.env"
+    p.write_bytes("﻿# c\r\nA=1\r\nexport B=two\r\nC=pa#ss\r\nD=x=y==\r\n".encode("utf-8"))
+    assert load_env_file(p) == {"A": "1", "B": "two", "C": "pa#ss", "D": "x=y=="}
+
+
+def test_secrets_never_reach_output_or_alerts(tmp_path):
+    env = {"TELEGRAM_BOT_TOKEN": "SENTINEL-TOKEN", "SMTP_PASSWORD": "SENTINEL-PW", "OKX_API_SECRET": "SENTINEL-SECRET"}
+    ex, alerts, out, kw, argv = setup(tmp_path, funding=HIGH)
+    for cmd in (["alert-test"], ["preflight"], ["status"], ["run", "--max-steps", "2"]):
+        assert main(argv + cmd, env=env, **kw) == 0
+    blob = "\n".join(out + alerts)
+    assert alerts and out
+    for s in ("SENTINEL-TOKEN", "SENTINEL-PW", "SENTINEL-SECRET"):
+        assert s not in blob
+
+
+class _FakeApi:
+    made: list = []
+
+    def __init__(self, *a, **kw):
+        self.args, self.kw, self.timeout = a, kw, None
+        _FakeApi.made.append(self)
+
+
+def _inject_fake_okx(monkeypatch):
+    _FakeApi.made = []
+    mods = {"okx": types.ModuleType("okx")}
+    for sub, cls in (("Trade", "TradeAPI"), ("Account", "AccountAPI"),
+                     ("PublicData", "PublicAPI"), ("MarketData", "MarketAPI")):
+        m = types.ModuleType(f"okx.{sub}")
+        setattr(m, cls, type(cls, (_FakeApi,), {}))
+        setattr(mods["okx"], sub, m)
+        mods[f"okx.{sub}"] = m
+    for name, m in mods.items():
+        monkeypatch.setitem(sys.modules, name, m)
+
+
+KEYS = {"OKX_API_KEY": "k", "OKX_API_SECRET": "s", "OKX_API_PASSPHRASE": "p"}
+
+
+def test_default_clients_wiring_live_defaults(monkeypatch):
+    _inject_fake_okx(monkeypatch)
+    def sent(msg):
+        pass
+    c = default_clients(dict(KEYS, OKX_SPOT_TD_MODE=""), CarryConfig(), sent)
+    assert c.mode == "LIVE" and len(_FakeApi.made) == 4
+    assert all(a.kw["flag"] == "0" and a.kw["debug"] is False for a in _FakeApi.made)
+    assert all(a.timeout == httpx.Timeout(10.0, connect=5.0) for a in _FakeApi.made)
+    assert c.exchange.spot_td_mode == "cash" and c.exchange._alert_fn is sent
+
+
+@pytest.mark.parametrize("demo", ["1", "true", "YES"])
+def test_default_clients_demo_flag_and_cross_mode(monkeypatch, demo):
+    _inject_fake_okx(monkeypatch)
+    c = default_clients(dict(KEYS, OKX_DEMO=demo, OKX_SPOT_TD_MODE="cross"), CarryConfig())
+    assert c.mode == "DEMO" and all(a.kw["flag"] == "1" for a in _FakeApi.made)
+    assert c.exchange.spot_td_mode == "cross"
+
+
+def test_default_clients_missing_keys_exit_before_importing_okx(monkeypatch):
+    monkeypatch.setitem(sys.modules, "okx", None)            # any import of okx would raise ImportError
+    with pytest.raises(SystemExit):
+        default_clients({"OKX_API_KEY": "k"}, CarryConfig())
