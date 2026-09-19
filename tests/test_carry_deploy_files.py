@@ -77,3 +77,9 @@ def test_runbook_makes_the_dead_mans_switch_a_live_prerequisite():
     text = (ROOT / "deploy" / "README-carry.md").read_text()
     live = text.split("## Live (small)")[1].split("## Kill switch")[0]
     assert "PREREQUISITE" in live and "dead-man" in live
+
+
+def test_runbook_pending_order_drill_and_leverage_floor_wording():
+    text = (ROOT / "deploy" / "README-carry.md").read_text()
+    for needle in ("while the instrument is FLAT", "force-open <that coin> 100", "hard floor", "warns below 1.6x"):
+        assert needle in text

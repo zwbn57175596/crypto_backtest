@@ -12,7 +12,9 @@ HIGH = {"BTC": [0.0001] * 9, "ETH": [0.0001] * 9}
 
 
 def setup(tmp_path, funding=None, **cfg_over):
-    cfg = {"state_path": str(tmp_path / "state.json"), "settle_sec": 0.0, "mgn_calibrated": True, **cfg_over}
+    cfg = {"state_path": str(tmp_path / "state.json"), "settle_sec": 0.0,
+           # deliberately bypasses the C1 calibration gate (the gate has its own tests); no real sleeping
+           "mgn_calibrated": True, **cfg_over}
     cfg_path = tmp_path / "carry.json"
     cfg_path.write_text(json.dumps(cfg))
     ex = FakeExchange(funding=dict(funding or {}))

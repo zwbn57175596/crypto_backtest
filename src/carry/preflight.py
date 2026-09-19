@@ -84,7 +84,10 @@ def preflight(account: Any, public: Any, cfg: CarryConfig, insts: dict[str, Inst
 
     def check_leverage(inst: Instrument) -> None:
         rows = _rows(account.get_leverage(mgnMode="cross", instId=inst.swap_id), "leverage")
-        lever = _num(rows[0].get("lever"))
+        raw = rows[0].get("lever")
+        if raw in (None, ""):
+            raise RuntimeError("no leverage value")
+        lever = _num(raw)
         if lever < 2:
             r.problems.append(f"swap leverage {inst.swap_id} is {lever:g}x, below 2x")
         else:

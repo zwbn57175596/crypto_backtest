@@ -129,3 +129,12 @@ def test_uncalibrated_config_is_a_warning_not_a_problem():
     r = preflight(FakeAccount(), FakePublic(), CarryConfig(mgn_calibrated=False), DEFAULT_INSTRUMENTS)
     assert r.ok and any("not calibrated" in w for w in r.warnings)
     assert not any("not calibrated" in w for w in run().warnings)
+
+
+@pytest.mark.parametrize("raw", ["", None])
+def test_missing_or_empty_leverage_value_is_a_problem_not_zero_x(raw):
+    acc = FakeAccount()
+    acc.leverage = raw
+    r = preflight(acc, FakePublic(), CFG, DEFAULT_INSTRUMENTS)
+    assert any("could not read swap leverage BTC-USDT-SWAP: " in p and "no leverage value" in p for p in r.problems)
+    assert not any("below 2x" in p for p in r.problems)
