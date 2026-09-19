@@ -8,9 +8,10 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, Callable
 
-from carry.types import DEFAULT_INSTRUMENTS, Instrument
+from carry.types import DEFAULT_INSTRUMENTS, Instrument, OrderResult
 
 TRANSIENT_CODES = frozenset({"50001", "50004", "50011", "50013", "50026"})   # verify on demo
 TERMINAL_STATES = frozenset({"filled", "canceled", "mmp_canceled"})
@@ -30,6 +31,10 @@ def _f(x: Any) -> float:
     if not math.isfinite(v):
         raise ExchangeError(f"non-finite number {x!r}")
     return v
+
+
+def _fmt(x: float) -> str:
+    return format(Decimal(str(round(x, 12))).normalize(), "f")
 
 
 @dataclass
@@ -170,3 +175,78 @@ class OkxExchange:
                 return None
             return v if math.isfinite(v) else None
         return self._cached(("mgn",), fetch)
+
+    # --- writes (market orders, idempotent by clOrdId) ------------------------
+    def _next_cl_ord_id(self) -> str:
+        self._seq += 1
+        return f"carry{int(self.clock() * 1000)}{self._seq % 1000:03d}"
+
+    def _place(self, inst_id: str, side: str, sz: float, td_mode: str, *,
+               reduce_only: bool = False, base_target: bool = False) -> OrderResult:
+        self._reads.clear()
+        cl = self._next_cl_ord_id()
+        kw: dict[str, Any] = dict(instId=inst_id, tdMode=td_mode, side=side, ordType="market",
+                                  sz=_fmt(sz), clOrdId=cl)
+        if reduce_only:
+            kw["reduceOnly"] = "true"
+        if base_target:
+            kw["tgtCcy"] = "base_ccy"
+        unknown = ""
+        try:
+            resp = self._call(self.trade.place_order, f"place {side} {inst_id}", **kw)
+            row = (resp.get("data") or [{}])[0]
+            if str(row.get("sCode", "0")) != "0":
+                return OrderResult(False, error=f"sCode={row.get('sCode')} {row.get('sMsg', '')}".strip())
+        except ExchangeError as e:
+            if e.code is not None and e.code not in TRANSIENT_CODES:
+                return OrderResult(False, error=str(e))          # definitive rejection
+            unknown = str(e)                                     # outcome unknown: resolve by clOrdId
+        res = self._wait_terminal(inst_id, cl)
+        self._reads.clear()
+        if unknown and not res.ok and res.filled <= 0:
+            return OrderResult(False, error=unknown)
+        return res
+
+    def _read_order(self, inst_id: str, cl: str) -> dict | None:
+        try:
+            data = self._call(self.trade.get_order, "get_order", instId=inst_id, clOrdId=cl)["data"]
+            return data[0] if data else None
+        except ExchangeError:
+            return None                                          # not found yet / transient
+
+    def _wait_terminal(self, inst_id: str, cl: str) -> OrderResult:
+        deadline = self.clock() + self.order_timeout_sec
+        last: dict | None = None
+        while True:
+            row = self._read_order(inst_id, cl)
+            if row is not None:
+                last = row
+                if row.get("state") in TERMINAL_STATES:
+                    break
+            if self.clock() >= deadline:
+                break
+            self._sleep(self.poll_sec)
+        if last is None:
+            return OrderResult(False, error="order status unknown")
+        if last.get("state") not in TERMINAL_STATES:
+            try:
+                self._call(self.trade.cancel_order, "cancel_order", instId=inst_id, clOrdId=cl)
+            except ExchangeError:
+                pass
+            last = self._read_order(inst_id, cl) or last
+        state = str(last.get("state"))
+        good = state == "filled"
+        return OrderResult(good, _f(last.get("accFillSz")), _f(last.get("avgPx")),
+                           "" if good else f"state={state}")
+
+    def sell_swap(self, coin: str, contracts: float) -> OrderResult:
+        return self._place(self.insts[coin].swap_id, "sell", contracts, "cross")
+
+    def buy_swap(self, coin: str, contracts: float) -> OrderResult:
+        return self._place(self.insts[coin].swap_id, "buy", contracts, "cross", reduce_only=True)
+
+    def buy_spot(self, coin: str, qty: float) -> OrderResult:
+        return self._place(self.insts[coin].spot_id, "buy", qty, self.spot_td_mode, base_target=True)
+
+    def sell_spot(self, coin: str, qty: float) -> OrderResult:
+        return self._place(self.insts[coin].spot_id, "sell", qty, self.spot_td_mode, base_target=True)
