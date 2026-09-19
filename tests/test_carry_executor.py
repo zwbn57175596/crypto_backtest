@@ -166,3 +166,46 @@ def test_pre_existing_holdings_are_untouched():
     assert exe.close("BTC", leg)
     assert ex.spot["BTC"] == pytest.approx(0.5, abs=1e-4)
     assert ex.swap["BTC"] == pytest.approx(0.0)
+
+
+def test_raising_alert_callable_does_not_skip_rollback():
+    ex = FakeExchange()
+
+    def bad_alert(msg: str) -> None:
+        raise RuntimeError("telegram down")
+
+    exe = Executor(ex, DEFAULT_INSTRUMENTS, CarryConfig(), bad_alert)
+    ex.fail_next("buy_spot")
+    assert exe.open("BTC", 125.0, now_ms=0) is None
+    assert ex.swap["BTC"] == pytest.approx(0.0)
+    assert ex.spot.get("BTC", 0.0) == 0.0
+
+
+def test_position_read_exception_during_open_raises_hedge_error():
+    ex, exe, alerts = make()
+    real = ex.swap_contracts
+    calls = {"n": 0}
+
+    def flaky(coin):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise ConnectionError("read failed")
+        return real(coin)
+
+    ex.swap_contracts = flaky
+    with pytest.raises(HedgeError):
+        exe.open("BTC", 125.0, now_ms=0)
+    assert any("CRITICAL" in a for a in alerts)
+
+
+def test_position_read_exception_during_close_returns_falsy_result():
+    ex, exe, alerts = make()
+    leg = exe.open("BTC", 125.0, now_ms=0)
+
+    def boom(coin):
+        raise ConnectionError("read failed")
+
+    ex.spot_balance = boom
+    res = exe.close("BTC", leg)
+    assert not res
+    assert any("CRITICAL" in a for a in alerts)
