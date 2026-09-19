@@ -23,6 +23,7 @@ class CarryConfig:
     poll_sec: float = 2.0
     open_cooldown_ms: int = 1_800_000   # wait after a failed open before retrying that coin
     max_open_fails: int = 3             # consecutive failed opens on one coin before halting
+    settle_sec: float = 0.0             # pause after each order before re-reading positions
     state_path: str = "live_state/carry_state.json"
 
     def __post_init__(self) -> None:
@@ -44,6 +45,8 @@ class CarryConfig:
             raise ValueError("open_cooldown_ms must be >= 0")
         if self.max_open_fails < 1:
             raise ValueError("max_open_fails must be >= 1")
+        if self.settle_sec < 0:
+            raise ValueError("settle_sec must be >= 0")
         if self.per_coin_notional > self.max_order_notional:
             raise ValueError("per-coin notional exceeds max_order_notional")
 

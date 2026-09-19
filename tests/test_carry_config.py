@@ -57,3 +57,9 @@ def test_rejects_bad_window():
 def test_rejects_negative_min_hold():
     with pytest.raises(ValueError):
         CarryConfig(min_hold=-1)
+
+
+def test_settle_sec_default_and_validation():
+    assert CarryConfig().settle_sec == 0.0
+    with pytest.raises(ValueError):
+        CarryConfig(settle_sec=-1.0)

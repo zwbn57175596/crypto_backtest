@@ -7,6 +7,7 @@ never touched.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -38,8 +39,9 @@ class Executor:
     MAX_TRIES = 3
 
     def __init__(self, ex: Exchange, insts: dict[str, Instrument], cfg: CarryConfig,
-                 alert: Callable[[str], None]) -> None:
+                 alert: Callable[[str], None], sleep: Callable[[float], None] = time.sleep) -> None:
         self.ex, self.insts, self.cfg, self.alert = ex, insts, cfg, alert
+        self._sleep = sleep
 
     def open(self, coin: str, notional: float, now_ms: int) -> CoinLeg | None:
         if not (0 < notional <= self.cfg.max_order_notional):
@@ -64,6 +66,7 @@ class Executor:
             self.ex.sell_swap(coin, sz.contracts)
         except Exception as e:  # noqa: BLE001
             self._alert(f"open {coin}: perp order error: {e!r}")
+        self._settle()
         held = self.ex.swap_contracts(coin) - before_perp
         if held < inst.swap_min:
             self._alert(f"open {coin}: perp order not filled")
@@ -77,6 +80,7 @@ class Executor:
             self.ex.buy_spot(coin, sz.spot_qty)
         except Exception as e:  # noqa: BLE001
             self._alert(f"open {coin}: spot order error: {e!r}")
+        self._settle()
         bought = self.ex.spot_balance(coin) - before_spot
         if bought >= inst.spot_min and abs(drift(bought, held, inst)) <= self.cfg.drift_tol:
             return CoinLeg(contracts=held, spot_qty=bought, entry_ts=now_ms)
@@ -110,6 +114,10 @@ class Executor:
         except Exception:  # noqa: BLE001
             pass
 
+    def _settle(self) -> None:
+        if self.cfg.settle_sec > 0:
+            self._sleep(self.cfg.settle_sec)
+
     def _drain(self, read: Callable[[], float], order: Callable[[float], object],
                cap: float, lot: float, minimum: float) -> bool:
         """Reduce a position by up to `cap` using `order(qty)`; success judged by re-reading `read()`."""
@@ -123,6 +131,7 @@ class Executor:
                 order(excess)                 # result ignored; the next read() decides
             except Exception as e:            # noqa: BLE001 - exchange errors count as a failed attempt
                 self._alert(f"order error: {e!r}")
+            self._settle()
         return floor_to(read() - target, lot) < minimum
 
     def _drain_spot(self, coin: str, cap: float) -> bool:

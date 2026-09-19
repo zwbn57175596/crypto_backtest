@@ -209,3 +209,24 @@ def test_position_read_exception_during_close_returns_falsy_result():
     res = exe.close("BTC", leg)
     assert not res
     assert any("CRITICAL" in a for a in alerts)
+
+
+def test_settle_delay_after_each_order():
+    ex = FakeExchange()
+    slept: list[float] = []
+    exe = Executor(ex, DEFAULT_INSTRUMENTS, CarryConfig(settle_sec=0.5), [].append, sleep=slept.append)
+    leg = exe.open("BTC", 125.0, now_ms=0)
+    assert leg is not None
+    assert slept == [0.5, 0.5]            # after the perp order and after the spot order
+    slept.clear()
+    assert exe.close("BTC", leg)
+    assert slept == [0.5, 0.5]            # one sell_spot attempt + one buy_swap attempt
+
+
+def test_no_sleep_when_settle_is_zero():
+    ex = FakeExchange()
+    slept: list[float] = []
+    exe = Executor(ex, DEFAULT_INSTRUMENTS, CarryConfig(), [].append, sleep=slept.append)
+    leg = exe.open("BTC", 125.0, now_ms=0)
+    exe.close("BTC", leg)
+    assert slept == []
