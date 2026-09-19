@@ -14,6 +14,11 @@ from typing import Any, Callable
 from carry.types import DEFAULT_INSTRUMENTS, Instrument, OrderResult
 
 TRANSIENT_CODES = frozenset({"50001", "50004", "50011", "50013", "50026"})   # verify on demo
+# UNVERIFIED on demo: OKX duplicate-clOrdId and order-not-found sCodes/codes. Isolated here so the
+# demo run can correct them; the adapter never relies on them for safety (it probes get_order first).
+DUPLICATE_CLORDID_CODES = frozenset({"51016"})
+NOT_FOUND_CODES = frozenset({"51603"})
+FUNDING_REFETCH_MIN_SEC = 60.0
 TERMINAL_STATES = frozenset({"filled", "canceled", "mmp_canceled"})
 SETTLEMENT_MS = 8 * 3600 * 1000
 
@@ -42,14 +47,18 @@ class _FundingCache:
     rates: list[float]
     limit: int
     expires_ms: float
+    fetched_at: float = 0.0
 
 
 class OkxExchange:
     def __init__(self, trade: Any, account: Any, public: Any, market: Any,
-                 insts: dict[str, Instrument] | None = None, *, spot_td_mode: str = "cross",
+                 insts: dict[str, Instrument] | None = None, *, spot_td_mode: str = "cash",
                  max_basis: float = 0.01, max_tick_age_sec: float = 30.0, order_timeout_sec: float = 10.0,
                  poll_sec: float = 0.5, retries: int = 3, backoff_sec: float = 0.5, read_ttl_sec: float = 1.0,
-                 clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep) -> None:
+                 clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep,
+                 alert: Callable[[str], None] | None = None) -> None:
+        if retries < 1:
+            raise ValueError("retries must be >= 1")
         self.trade, self.account, self.public, self.market = trade, account, public, market
         self.insts = insts or DEFAULT_INSTRUMENTS
         self.spot_td_mode, self.max_basis, self.max_tick_age_sec = spot_td_mode, max_basis, max_tick_age_sec
@@ -58,6 +67,17 @@ class OkxExchange:
         self._funding: dict[str, _FundingCache] = {}
         self._reads: dict[tuple, tuple[float, Any]] = {}
         self._seq = 0
+        self._alert_fn = alert
+        self._unconfirmed: dict[str, str] = {}       # clOrdId -> instId of orders not proven terminal
+        self._blocked_alerted: frozenset[str] | None = None
+
+    def _alert(self, msg: str) -> None:
+        if self._alert_fn is None:
+            return
+        try:
+            self._alert_fn(msg)
+        except Exception:  # noqa: BLE001 - an alert sink must never break the order path
+            pass
 
     # --- plumbing ----------------------------------------------------------
     def _call(self, fn: Callable[..., dict], what: str, **kw: Any) -> dict:
@@ -76,7 +96,8 @@ class OkxExchange:
                     raise last
             if attempt < self.retries - 1:
                 self._sleep(self.backoff_sec * (2 ** attempt))
-        assert last is not None
+        if last is None:
+            raise ExchangeError(f"{what}: no attempt made")
         raise last
 
     def _cached(self, key: tuple, fn: Callable[[], Any]) -> Any:
@@ -90,8 +111,14 @@ class OkxExchange:
 
     # --- reads -------------------------------------------------------------
     def _ticker(self, inst_id: str) -> float:
-        d = self._call(self.market.get_ticker, f"ticker {inst_id}", instId=inst_id)["data"][0]
-        last, ts = _f(d["last"]), int(d["ts"])
+        resp = self._call(self.market.get_ticker, f"ticker {inst_id}", instId=inst_id)
+        try:
+            d = resp["data"][0]
+            last, ts = _f(d["last"]), int(d["ts"])
+        except ExchangeError:
+            raise
+        except (KeyError, IndexError, TypeError, ValueError) as e:
+            raise ExchangeError(f"{inst_id}: malformed ticker payload ({type(e).__name__}: {e})") from e
         if abs(self.clock() * 1000 - ts) > self.max_tick_age_sec * 1000:
             raise ExchangeError(f"{inst_id}: stale ticker (age {abs(self.clock() * 1000 - ts) / 1000:.0f}s)")
         if not last > 0:
@@ -111,13 +138,16 @@ class OkxExchange:
         if n > 100:
             raise ExchangeError("funding_history: n must be <= 100")
         c = self._funding.get(coin)
-        if c is None or c.limit < n or self.clock() * 1000 >= c.expires_ms:
+        now = self.clock()
+        stale = c is not None and now * 1000 >= c.expires_ms and now - c.fetched_at >= FUNDING_REFETCH_MIN_SEC
+        if c is None or c.limit < n or stale:
             rows = self._call(self.public.funding_rate_history, f"funding history {coin}",
                               instId=self.insts[coin].swap_id, limit=str(n))["data"]
+            # fundingRate is the announced rate; the demo run decides whether `realizedRate` is the truth.
             pts = sorted((int(r["fundingTime"]), _f(r["fundingRate"])) for r in rows)
             if not pts:
                 raise ExchangeError(f"{coin}: no funding history returned")
-            c = _FundingCache([r for _, r in pts], n, pts[-1][0] + SETTLEMENT_MS + 60_000)
+            c = _FundingCache([r for _, r in pts], n, pts[-1][0] + SETTLEMENT_MS + 60_000, now)
             self._funding[coin] = c
         return c.rates[-n:]
 
@@ -171,7 +201,7 @@ class OkxExchange:
                 return None
             try:
                 v = float(raw)
-            except ValueError:
+            except (ValueError, TypeError):
                 return None
             return v if math.isfinite(v) else None
         return self._cached(("mgn",), fetch)
@@ -183,6 +213,15 @@ class OkxExchange:
 
     def _place(self, inst_id: str, side: str, sz: float, td_mode: str, *,
                reduce_only: bool = False, base_target: bool = False) -> OrderResult:
+        if not math.isfinite(sz) or sz <= 0 or float(_fmt(sz)) <= 0:
+            return OrderResult(False, error="invalid size")
+        pending = self._unconfirmed_pending()
+        if pending:
+            key = frozenset(pending)
+            if key != self._blocked_alerted:
+                self._blocked_alerted = key
+                self._alert(f"[CRITICAL] order placement BLOCKED: unconfirmed order(s) {sorted(pending)}")
+            return OrderResult(False, error=f"BLOCKED: unconfirmed order(s) {sorted(pending)}")
         self._reads.clear()
         cl = self._next_cl_ord_id()
         kw: dict[str, Any] = dict(instId=inst_id, tdMode=td_mode, side=side, ordType="market",
@@ -191,28 +230,77 @@ class OkxExchange:
             kw["reduceOnly"] = "true"
         if base_target:
             kw["tgtCcy"] = "base_ccy"
-        unknown = ""
-        try:
-            resp = self._call(self.trade.place_order, f"place {side} {inst_id}", **kw)
-            row = (resp.get("data") or [{}])[0]
-            if str(row.get("sCode", "0")) != "0":
-                return OrderResult(False, error=f"sCode={row.get('sCode')} {row.get('sMsg', '')}".strip())
-        except ExchangeError as e:
-            if e.code is not None and e.code not in TRANSIENT_CODES:
-                return OrderResult(False, error=str(e))          # definitive rejection
-            unknown = str(e)                                     # outcome unknown: resolve by clOrdId
+        ambiguous = ""
+        for attempt in range(self.retries):
+            state, msg = self._post(kw)
+            if state == "rejected":
+                return OrderResult(False, error=msg)
+            if state == "accepted":
+                ambiguous = ""
+                break
+            ambiguous = msg
+            exists = self._probe(inst_id, cl)         # never re-POST before proving the order absent
+            if exists is not False:
+                break                                  # found, or unknown: poll it (unconfirmed protocol)
+            if attempt == self.retries - 1:
+                return OrderResult(False, error=msg)
+            self._sleep(self.backoff_sec * (2 ** attempt))
         res = self._wait_terminal(inst_id, cl)
         self._reads.clear()
-        if unknown and not res.ok and res.filled <= 0:
-            return OrderResult(False, error=unknown)
+        if ambiguous and not res.ok:
+            if res.error.startswith("UNCONFIRMED"):
+                return OrderResult(False, res.filled, res.avg_price, f"{res.error} (placement: {ambiguous})")
+            return OrderResult(False, res.filled, res.avg_price, f"{ambiguous}; {res.error}")
         return res
+
+    def _post(self, kw: dict[str, Any]) -> tuple[str, str]:
+        """One placement attempt -> ("accepted"|"rejected"|"ambiguous", text). Only a row-level
+        sCode may produce "rejected"; everything else that is not a clean success is ambiguous."""
+        try:
+            resp = self.trade.place_order(**kw)
+        except Exception as e:  # noqa: BLE001
+            return "ambiguous", f"place_order: {type(e).__name__}: {e}"
+        try:
+            code, msg = str(resp.get("code", "")), str(resp.get("msg", ""))
+            rows = resp.get("data") or []
+            row = rows[0] if rows and isinstance(rows[0], dict) else None
+        except Exception as e:  # noqa: BLE001 - malformed envelope
+            return "ambiguous", f"place_order: malformed response ({type(e).__name__}: {e})"
+        scode = str(row.get("sCode", "")) if row is not None else ""
+        if scode not in ("", "0"):
+            if scode in DUPLICATE_CLORDID_CODES:
+                return "ambiguous", f"place_order: duplicate clOrdId sCode={scode}"   # the order exists
+            return "rejected", f"sCode={scode} {row.get('sMsg', '')}".strip()
+        if code == "0":
+            return "accepted", ""
+        return "ambiguous", f"place_order: code={code} msg={msg}"
+
+    def _probe(self, inst_id: str, cl: str) -> bool | None:
+        """Does the order exist? True / False (proven absent) / None (cannot tell)."""
+        try:
+            data = self._call(self.trade.get_order, "get_order", instId=inst_id, clOrdId=cl).get("data")
+        except ExchangeError as e:
+            return False if e.code in NOT_FOUND_CODES else None
+        return bool(data)
 
     def _read_order(self, inst_id: str, cl: str) -> dict | None:
         try:
             data = self._call(self.trade.get_order, "get_order", instId=inst_id, clOrdId=cl)["data"]
             return data[0] if data else None
-        except ExchangeError:
+        except (ExchangeError, KeyError, IndexError, TypeError):
             return None                                          # not found yet / transient
+
+    def _cancel_and_confirm(self, inst_id: str, cl: str) -> dict | None:
+        for _ in range(3):
+            try:
+                self._call(self.trade.cancel_order, "cancel_order", instId=inst_id, clOrdId=cl)
+            except ExchangeError:
+                pass
+            row = self._read_order(inst_id, cl)
+            if row is not None and row.get("state") in TERMINAL_STATES:
+                return row
+            self._sleep(self.poll_sec)
+        return None
 
     def _wait_terminal(self, inst_id: str, cl: str) -> OrderResult:
         deadline = self.clock() + self.order_timeout_sec
@@ -226,18 +314,37 @@ class OkxExchange:
             if self.clock() >= deadline:
                 break
             self._sleep(self.poll_sec)
-        if last is None:
-            return OrderResult(False, error="order status unknown")
-        if last.get("state") not in TERMINAL_STATES:
-            try:
-                self._call(self.trade.cancel_order, "cancel_order", instId=inst_id, clOrdId=cl)
-            except ExchangeError:
-                pass
-            last = self._read_order(inst_id, cl) or last
+        if last is None or last.get("state") not in TERMINAL_STATES:
+            confirmed = self._cancel_and_confirm(inst_id, cl)
+            if confirmed is None:
+                self._unconfirmed[cl] = inst_id
+                self._alert(f"[CRITICAL] order {cl} on {inst_id} could not be confirmed terminal; "
+                            "new orders are BLOCKED until it resolves")
+                try:
+                    filled = _f(last.get("accFillSz")) if last else 0.0
+                except (ExchangeError, ValueError, TypeError):
+                    filled = 0.0
+                return OrderResult(False, filled, 0.0,
+                                   "UNCONFIRMED: status unknown after cancel attempts; order may still be live")
+            last = confirmed
         state = str(last.get("state"))
         good = state == "filled"
         return OrderResult(good, _f(last.get("accFillSz")), _f(last.get("avgPx")),
                            "" if good else f"state={state}")
+
+    def _unconfirmed_pending(self) -> list[str]:
+        for cl, inst_id in list(self._unconfirmed.items()):
+            row = self._read_order(inst_id, cl)
+            if row is not None and row.get("state") in TERMINAL_STATES:
+                del self._unconfirmed[cl]
+        if not self._unconfirmed:
+            self._blocked_alerted = None
+        return list(self._unconfirmed)
+
+    def clear_unconfirmed(self) -> None:
+        """Operator override: forget unconfirmed orders (the operator has verified them by hand)."""
+        self._unconfirmed.clear()
+        self._blocked_alerted = None
 
     def sell_swap(self, coin: str, contracts: float) -> OrderResult:
         return self._place(self.insts[coin].swap_id, "sell", contracts, "cross")

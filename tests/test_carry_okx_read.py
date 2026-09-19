@@ -225,3 +225,40 @@ def test_transient_error_code_exhausts_retries_and_others_fail_fast():
         with pytest.raises(ExchangeError) as e:
             ex.price("BTC")
         assert e.value.code == code and bad.n == calls
+
+
+def test_ticker_malformed_payloads_raise_exchange_error():
+    class Mk:
+        def __init__(self, data):
+            self.data = data
+
+        def get_ticker(self, instId):
+            return ok(self.data)
+
+    good_ts = str(NOW_MS)
+    for data in ([], [{"ts": good_ts}], [{"last": "60000"}], [{"last": "60000", "ts": ""}],
+                 [{"last": "abc", "ts": good_ts}], [{"last": "60000", "ts": "x"}]):
+        ex, _, _ = make(market=Mk(data))
+        with pytest.raises(ExchangeError):
+            ex.price("BTC")
+
+
+def test_funding_cache_does_not_refetch_more_than_once_per_minute_after_expiry():
+    ex, parts, clock = make()
+    ex.funding_history("BTC", 9)
+    clock.t += 9 * 3600                                            # expired; latest fundingTime unchanged
+    ex.funding_history("BTC", 9)
+    assert len(parts["public"].calls) == 2
+    clock.t += 10
+    ex.funding_history("BTC", 9)
+    assert len(parts["public"].calls) == 2
+    clock.t += 61
+    ex.funding_history("BTC", 9)
+    assert len(parts["public"].calls) == 3
+
+
+def test_constructor_validation_and_defaults():
+    with pytest.raises(ValueError):
+        OkxExchange(None, None, None, None, retries=0)
+    assert OkxExchange(None, None, None, None).spot_td_mode == "cash"
+
