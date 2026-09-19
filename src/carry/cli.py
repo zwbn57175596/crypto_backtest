@@ -167,10 +167,14 @@ def _status_state(cfg: CarryConfig, out: Callable[[str], None]) -> CarryState:
 
 
 def _force_close(eng: Engine, coin: str, clients: Clients, cfg: CarryConfig, out: Callable[[str], None]) -> int:
-    if coin not in cfg.coins:
+    recorded = coin in eng.state.legs                          # a recorded leg is always closable
+    if not recorded and coin not in cfg.coins:
         out(f"error: unknown coin {coin!r}")
         return 1
-    if coin not in eng.state.legs:
+    if recorded and coin not in DEFAULT_INSTRUMENTS:
+        out(f"PROBLEM: no instrument definition for {coin}; close it in the OKX UI and hand-edit the state")
+        return 1
+    if not recorded:
         try:
             spot, perp = clients.exchange.spot_balance(coin), clients.exchange.swap_contracts(coin)
             status = check_hedge(spot, perp, DEFAULT_INSTRUMENTS[coin], cfg.drift_tol)

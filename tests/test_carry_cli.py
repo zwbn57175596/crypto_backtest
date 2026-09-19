@@ -451,3 +451,39 @@ def test_default_clients_missing_keys_exit_before_importing_okx(monkeypatch):
     monkeypatch.setitem(sys.modules, "okx", None)            # any import of okx would raise ImportError
     with pytest.raises(SystemExit):
         default_clients({"OKX_API_KEY": "k"}, CarryConfig())
+
+
+# --- fix round 2 -------------------------------------------------------------------
+
+from carry.state import CoinLeg
+
+
+def test_force_close_closes_a_recorded_leg_even_if_coin_was_removed_from_config(tmp_path):
+    ex, alerts, out, kw, argv = setup(tmp_path)
+    assert main(argv + ["force-open", "BTC", "100"], env={}, **kw) == 0
+    assert "BTC" in load_state(tmp_path / "state.json").legs
+    eth_only = tmp_path / "eth.json"
+    eth_only.write_text(json.dumps({"state_path": str(tmp_path / "state.json"), "coins": ["ETH"]}))
+    assert main(["--config", str(eth_only), "force-close", "BTC"], env={}, **kw) == 0
+    assert load_state(tmp_path / "state.json").legs == {}
+    from carry.hedge import HedgeStatus, check_hedge
+    from carry.types import DEFAULT_INSTRUMENTS
+    assert check_hedge(ex.spot_balance("BTC"), ex.swap_contracts("BTC"), DEFAULT_INSTRUMENTS["BTC"], 0.02) \
+        == HedgeStatus.FLAT                                 # flat (fee dust below the minimum lot is fine)
+
+
+def test_force_close_recorded_leg_without_instrument_definition_is_a_problem_not_a_crash(tmp_path):
+    ex, alerts, out, kw, argv = setup(tmp_path)
+    save_state(tmp_path / "state.json",
+               CarryState(mode="HEDGED", legs={"XRP": CoinLeg(contracts=1.0, spot_qty=1.0, entry_ts=0)}))
+    assert main(argv + ["force-close", "XRP"], env={}, **kw) == 1
+    assert "PROBLEM: no instrument definition for XRP; close it in the OKX UI and hand-edit the state" in out
+    assert ex.calls == []
+
+
+def test_force_close_unrecorded_coin_not_in_config_is_still_unknown(tmp_path):
+    ex, alerts, out, kw, argv = setup(tmp_path)
+    eth_only = tmp_path / "eth.json"
+    eth_only.write_text(json.dumps({"state_path": str(tmp_path / "state.json"), "coins": ["ETH"]}))
+    assert main(["--config", str(eth_only), "force-close", "BTC"], env={}, **kw) == 1
+    assert any(line.startswith("error: unknown coin") for line in out)

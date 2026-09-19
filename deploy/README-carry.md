@@ -10,14 +10,14 @@ The engine keeps BTC and ETH hedged (spot long + USDT-perp short, 1.0x, market o
 5. **State and lock location**: `state_path` (and its `.lock` file, `<state_path>.lock`) must be on a local filesystem (ext4 on the server's own disk). `flock` is not reliable on NFS/SMB/synced folders, and a broken lock allows two instances to trade the same account.
 
 ## Before the service
-Run every manual command from the project directory and use absolute paths for `--config`, `--env-file` and `--log`:
+Run every manual command from the project directory, with `PYTHONPATH=src` (as in the unit file; not needed if the package is installed editable) and absolute paths for `--config`, `--env-file` and `--log` (explicit flags, so it works in bash and zsh alike):
 ```
 cd /home/ubuntu/crypto_backtest
-C="--config /home/ubuntu/crypto_backtest/config/carry.json --env-file /home/ubuntu/.secrets/carry.env --log /home/ubuntu/crypto_backtest/live_state/carry.log"
-.venv/bin/python -m carry $C alert-test   # log + Telegram + email arrive
-.venv/bin/python -m carry $C preflight    # must print "preflight OK"
-.venv/bin/python -m carry $C status       # exposure report
+PYTHONPATH=src .venv/bin/python -m carry --config /home/ubuntu/crypto_backtest/config/carry.json --env-file /home/ubuntu/.secrets/carry.env --log /home/ubuntu/crypto_backtest/live_state/carry.log alert-test   # log + Telegram + email arrive
+PYTHONPATH=src .venv/bin/python -m carry --config /home/ubuntu/crypto_backtest/config/carry.json --env-file /home/ubuntu/.secrets/carry.env --log /home/ubuntu/crypto_backtest/live_state/carry.log preflight    # must print "preflight OK"
+PYTHONPATH=src .venv/bin/python -m carry --config /home/ubuntu/crypto_backtest/config/carry.json --env-file /home/ubuntu/.secrets/carry.env --log /home/ubuntu/crypto_backtest/live_state/carry.log status       # exposure report
 ```
+The same flags and prefix apply to every other command in this runbook (`force-open`, `force-close`, `rearm`).
 Every command prints `okx mode: DEMO` or `okx mode: LIVE` as its FIRST output line; the `run` startup alert and every heartbeat carry it too. Check it before doing anything else.
 `preflight` also fails (`PROBLEM:` line) for every carry order (`clOrdId` starting `carry`) still live on the exchange: resolve or cancel them by hand first.
 
@@ -53,14 +53,14 @@ Stop the service and delete/rename `live_state/carry_state.json` (and the `.lock
 
 ## Operations
 - Manual commands need the lock: `sudo systemctl stop carry`, then `force-open|force-close|rearm`, then `sudo systemctl start carry`. `systemctl stop` waits for the current poll to finish (normally under 5 s, up to about 2 minutes if an order is not confirming; the unit allows 300 s). After stopping, run `status` and confirm the exposure is flat or a healthy HEDGED position before doing anything else. `status` works without the lock and never changes the state file.
-- `force-close COIN` only closes legs the bot has a record of. If the exchange holds a coin the bot has no record of, it prints `PROBLEM: no recorded leg ...` and exits 1 without trading: the bot never trades holdings it has no record of, so close them by hand in the OKX UI, then run `rearm`.
+- `force-close COIN` only closes legs the bot has a record of (a recorded leg can be closed even if the coin was since removed from `coins`). If the exchange holds a coin the bot has no record of, it prints `PROBLEM: no recorded leg ...` and exits 1 without trading: the bot never trades holdings it has no record of, so close them by hand in the OKX UI, then run `rearm`.
 - HALTED: read the alert and `status`; fix the cause; flatten any recorded leg with `force-close COIN` and any unrecorded holding by hand in the OKX UI; when the exchange is flat run `rearm`. `rearm` also clears the adapter's "unconfirmed order" block, so only run it after you have checked by hand that no carry order is still live.
 - The bot never sells coins it did not buy; if it reports "unexpected holdings", move them out of the account.
 - **Pending orders after a restart**: on `run`, `force-open`, `force-close` and `rearm` (not `status` or `preflight`, which only report) the bot registers carry orders that are still live on the exchange as "unconfirmed" and sends a CRITICAL alert; new orders on those instruments stay blocked until the orders resolve (or you `rearm` after verifying them by hand).
 
 ## Failure modes to know about
 - **HALTED start with a healthy pre-existing hedge is NOT adopted.** If the bot starts HALTED (unreadable state file, or the startup check could not complete — alert `[CRITICAL] startup check failed (...); starting HALTED`), it does not adopt an existing hedge. Close it by hand in the OKX UI (the bot has no record of it, so `force-close` refuses and the risk logic that only acts on recorded legs does not manage it), then `rearm` once flat.
-- **Startup check failure**: a transient exchange error while reconciling starts the bot HALTED and persists that; it does not exit and it does not trade. The watchdog and heartbeat keep running. Fix the cause, then `force-close`/`rearm`.
-- **Hung exchange call**: the watchdog, the risk checks and the heartbeat run in one loop, so one hung HTTP call stalls all of them together. The CLI sets a hard 10 s (5 s connect) HTTP timeout on every python-okx client, but a request can still take several retries, so a call can block for a while. Do not rely on the in-process heartbeat alone: run an external dead-man's switch that alerts when the heartbeat message is ABSENT for more than about 2 hours (for example a Healthchecks-style ping or a monitor on the Telegram chat/`carry.log`).
+- **Startup check failure**: a transient exchange error while reconciling starts the bot HALTED and persists that; it does not exit and it does not trade. The watchdog and heartbeat keep running. Fix the cause; close any real holding by hand in the OKX UI (`force-close` only closes legs the bot has a record of), then run `rearm`.
+- **Hung exchange call**: the watchdog, the risk checks and the heartbeat run in one loop, so one hung HTTP call stalls all of them together. The CLI sets a 10 s read timeout (5 s connect) per HTTP request on every python-okx client (the adapter retries and polls, so one order can take longer). Do not rely on the in-process heartbeat alone: run an external dead-man's switch that alerts when the heartbeat message is ABSENT for more than about 2 hours (for example a Healthchecks-style ping or a monitor on the Telegram chat/`carry.log`).
 - **Corrupt state file**: an unreadable state file is renamed to `<state>.corrupt-<unix time>` and replaced by a HALTED state. If the rename fails (alert says "could not be moved aside"), the first save overwrites the bad file: copy it somewhere first (`cp live_state/carry_state.json ~/carry_state.bak`) if you want to inspect it.
 - **Lock**: the single-instance lock is `<state_path>.lock`; a second instance or a manual command while the service runs exits with code 3 and "another carry instance holds the lock". Keep it on a local filesystem (see setup).
