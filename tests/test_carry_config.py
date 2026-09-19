@@ -63,3 +63,9 @@ def test_settle_sec_default_and_validation():
     assert CarryConfig().settle_sec == 0.0
     with pytest.raises(ValueError):
         CarryConfig(settle_sec=-1.0)
+
+
+def test_settle_sec_must_be_finite():
+    for bad in (float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            CarryConfig(settle_sec=bad)

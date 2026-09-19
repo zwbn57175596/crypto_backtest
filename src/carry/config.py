@@ -1,6 +1,7 @@
 """Validated configuration for the carry engine."""
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 
@@ -45,8 +46,8 @@ class CarryConfig:
             raise ValueError("open_cooldown_ms must be >= 0")
         if self.max_open_fails < 1:
             raise ValueError("max_open_fails must be >= 1")
-        if self.settle_sec < 0:
-            raise ValueError("settle_sec must be >= 0")
+        if not (math.isfinite(self.settle_sec) and self.settle_sec >= 0):
+            raise ValueError("settle_sec must be finite and >= 0")
         if self.per_coin_notional > self.max_order_notional:
             raise ValueError("per-coin notional exceeds max_order_notional")
 

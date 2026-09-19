@@ -1,4 +1,6 @@
 import logging
+import ssl
+import threading
 
 import pytest
 
@@ -23,8 +25,13 @@ class Clock:
         return self.t
 
 
+def sync(fn):
+    fn()
+
+
 def make(sinks, clock=None, throttle=300.0):
-    return Alerter(logging.getLogger("carry.test"), sinks, throttle_sec=throttle, clock=clock or Clock())
+    return Alerter(logging.getLogger("carry.test"), sinks, throttle_sec=throttle,
+                   clock=clock or Clock(), dispatch=sync)
 
 
 def test_message_is_logged_and_sent(caplog):
@@ -55,6 +62,7 @@ def test_failing_sink_is_isolated_and_secret_never_logged(caplog):
     assert good.sent == ["hello"]
     text = " ".join(r.getMessage() for r in caplog.records)
     assert "telegram" in text and "RuntimeError" in text and "secret-token-123" not in text
+    assert "secret-token-123" not in caplog.text
 
 
 def test_channels_lists_sink_names():
@@ -75,15 +83,16 @@ def test_telegram_sink_posts_json_and_checks_status():
     TelegramSink("TOKEN", "42", post=post).send("x" * 5000)
     url, payload, timeout = calls[0]
     assert url == "https://api.telegram.org/botTOKEN/sendMessage"
-    assert payload["chat_id"] == "42" and len(payload["text"]) == 4000 and timeout == 10.0
+    assert payload["chat_id"] == "42" and len(payload["text"]) == 4000 and timeout == 5.0
     assert calls[1] == "checked"
 
 
 class FakeSMTP:
     instances = []
 
-    def __init__(self, host, port, timeout):
+    def __init__(self, host, port, timeout, context=None):
         self.host, self.port, self.log = host, port, []
+        self.init_context, self.tls_context = context, None
         FakeSMTP.instances.append(self)
 
     def __enter__(self):
@@ -92,8 +101,9 @@ class FakeSMTP:
     def __exit__(self, *a):
         return False
 
-    def starttls(self):
+    def starttls(self, context=None):
         self.log.append("starttls")
+        self.tls_context = context
 
     def login(self, u, p):
         self.log.append(("login", u))
@@ -124,6 +134,7 @@ def clean_carry_logger():
     for h in list(lg.handlers):
         lg.removeHandler(h)
         h.close()
+    lg.propagate = True
 
 
 def test_build_alerter_detects_channels(tmp_path, clean_carry_logger):
@@ -145,3 +156,183 @@ def test_setup_logger_is_idempotent_and_writes_file(tmp_path, clean_carry_logger
     for h in lg.handlers:
         h.flush()
     assert "hello file" in p.read_text()
+
+
+# --- fix round 1 ------------------------------------------------------------
+
+def test_failed_delivery_is_not_throttled_and_is_retried():
+    class Flaky(Sink):
+        def send(self, text):
+            if not self.sent and not getattr(self, "tried", False):
+                self.tried = True
+                raise RuntimeError("boom")
+            self.sent.append(text)
+
+    s, clock = Flaky("flaky"), Clock()
+    a = make([s], clock)
+    a("m")
+    assert s.sent == []
+    clock.t += 1
+    a("m")                                   # identical, within throttle window, but the first never delivered
+    assert s.sent == ["m"]
+    clock.t += 1
+    a("m")                                   # now delivered and throttled
+    assert s.sent == ["m"]
+
+
+def test_throttle_is_per_sink():
+    bad_then_ok, good, clock = Sink("a", fail=True), Sink("b"), Clock()
+    a = make([bad_then_ok, good], clock)
+    a("m")
+    bad_then_ok.fail = False
+    clock.t += 1
+    a("m")
+    assert good.sent == ["m"]                # b throttled on the repeat
+    assert bad_then_ok.sent == ["m"]         # a retried because its first attempt failed
+
+
+def test_non_str_message_and_broken_clock_never_raise():
+    s = Sink()
+
+    def bad_clock():
+        raise RuntimeError("clock")
+
+    Alerter(logging.getLogger("carry.test"), [s], clock=bad_clock, dispatch=sync)(123)
+    assert s.sent == ["123"]
+
+
+def test_default_dispatcher_delivers_in_background():
+    s = Sink()
+    a = Alerter(logging.getLogger("carry.test"), [s], clock=Clock())
+    a("hi")
+    assert a.flush(5.0) is True
+    assert s.sent == ["hi"]
+
+
+def test_flush_true_immediately_with_injected_dispatcher():
+    assert make([Sink()]).flush(0.0) is True
+
+
+class BlockingSink:
+    name = "slow"
+
+    def __init__(self):
+        self.started, self.release, self.sent = threading.Event(), threading.Event(), []
+
+    def send(self, text):
+        self.started.set()
+        assert self.release.wait(5.0)
+        self.sent.append(text)
+
+
+def test_slow_sink_does_not_block_the_caller():
+    s = BlockingSink()
+    a = Alerter(logging.getLogger("carry.test"), [s], clock=Clock())
+    a("x")                                   # returns although the sink is blocked
+    assert s.started.wait(5.0)
+    assert s.sent == []
+    s.release.set()
+    assert a.flush(5.0) is True
+    assert s.sent == ["x"]
+
+
+def test_flush_times_out_while_sink_is_blocked():
+    s = BlockingSink()
+    a = Alerter(logging.getLogger("carry.test"), [s], clock=Clock())
+    a("x")
+    assert s.started.wait(5.0)
+    assert a.flush(0.05) is False
+    s.release.set()
+    assert a.flush(5.0) is True
+
+
+def test_full_queue_drops_with_log_line_and_never_blocks(caplog):
+    s = BlockingSink()
+    a = Alerter(logging.getLogger("carry.test"), [s], clock=Clock())
+    with caplog.at_level(logging.INFO, logger="carry.test"):
+        for i in range(150):
+            a(f"m{i}")
+    assert "dropped" in caplog.text
+    s.release.set()
+    assert a.flush(5.0) is True
+
+
+def test_email_sink_passes_verifying_tls_context_on_starttls_and_ssl():
+    FakeSMTP.instances.clear()
+    EmailSink("h", 587, "u", "p", "u@x", ["a@x"], smtp_factory=FakeSMTP).send("m")
+    ctx = FakeSMTP.instances[0].tls_context
+    assert isinstance(ctx, ssl.SSLContext) and ctx.verify_mode == ssl.CERT_REQUIRED
+    assert FakeSMTP.instances[0].init_context is None
+    FakeSMTP.instances.clear()
+    EmailSink("h", 465, "u", "p", "u@x", ["a@x"], smtp_factory=FakeSMTP).send("m")
+    ctx = FakeSMTP.instances[0].init_context
+    assert isinstance(ctx, ssl.SSLContext) and ctx.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_email_sink_empty_message_does_not_raise():
+    FakeSMTP.instances.clear()
+    EmailSink("h", 465, "u", "p", "u@x", ["a@x"], smtp_factory=FakeSMTP).send("")
+    assert FakeSMTP.instances[0].log[-1] == ("send", "[carry] ", "a@x")
+
+
+def test_setup_logger_isolates_and_quiets_http_loggers(tmp_path, clean_carry_logger):
+    setup_logger(tmp_path / "carry.log")
+    assert logging.getLogger("httpx").level == logging.WARNING
+    assert logging.getLogger("httpcore").level == logging.WARNING
+    assert logging.getLogger("carry").propagate is False
+
+
+def test_setup_logger_dedupes_equivalent_paths(tmp_path, clean_carry_logger):
+    (tmp_path / "sub").mkdir()
+    lg = setup_logger(tmp_path / "sub" / "carry.log")
+    n = len(lg.handlers)
+    assert len(setup_logger(tmp_path / "sub" / ".." / "sub" / "carry.log").handlers) == n
+
+
+def _logtext(path):
+    for h in logging.getLogger("carry").handlers:
+        h.flush()
+    return path.read_text()
+
+
+def test_build_alerter_warns_about_partial_telegram_by_name_only(tmp_path, clean_carry_logger):
+    log = tmp_path / "carry.log"
+    assert build_alerter({"TELEGRAM_BOT_TOKEN": "SECRETTOK"}, str(log)).channels == []
+    text = _logtext(log)
+    assert "TELEGRAM_CHAT_ID" in text and "SECRETTOK" not in text
+
+
+def test_build_alerter_warns_about_partial_smtp(tmp_path, clean_carry_logger):
+    log = tmp_path / "carry.log"
+    assert build_alerter({"SMTP_HOST": "hostval"}, str(log)).channels == []
+    text = _logtext(log)
+    assert all(n in text for n in ("SMTP_USER", "SMTP_PASSWORD", "ALERT_EMAIL_TO"))
+    assert "hostval" not in text
+
+
+def test_build_alerter_skips_email_without_recipients(tmp_path, clean_carry_logger):
+    log = tmp_path / "carry.log"
+    env = {"SMTP_HOST": "h", "SMTP_USER": "u", "SMTP_PASSWORD": "p", "ALERT_EMAIL_TO": " , "}
+    assert build_alerter(env, str(log)).channels == []
+    assert "ALERT_EMAIL_TO" in _logtext(log)
+
+
+def test_build_alerter_bad_smtp_port_skips_only_email(tmp_path, clean_carry_logger):
+    log = tmp_path / "carry.log"
+    env = {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "1", "SMTP_HOST": "h", "SMTP_USER": "u",
+           "SMTP_PASSWORD": "p", "ALERT_EMAIL_TO": "a@x.com", "SMTP_PORT": "abc"}
+    assert build_alerter(env, str(log)).channels == ["telegram"]
+    assert "SMTP_PORT" in _logtext(log)
+
+
+def test_build_alerter_passes_dispatch_through(tmp_path, clean_carry_logger):
+    calls = []
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+    a = build_alerter({"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "1"}, str(tmp_path / "c.log"),
+                      post=lambda url, json, timeout: (calls.append(json), Resp())[1], dispatch=sync)
+    a("hello")
+    assert calls and calls[0]["text"] == "hello"
