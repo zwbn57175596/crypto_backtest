@@ -851,6 +851,8 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 
 ### Task 5: Executor (open with rollback, close)
 
+> **Amendment (fix round 1, controller ruling):** the code below was superseded after review. Final semantics: the exchange is the source of truth (success judged by re-reading positions), every reduce is delta-capped and retried up to 3 times (`_drain`), `close` returns a `CloseResult` (falsy unless both legs are flat), a spot leg that cannot be sold during an open-rollback keeps the perp and raises `HedgeError`. See `.superpowers/sdd/2026-09-19-funding-carry-phase3/task-5-fix1-brief.md` and the committed `src/carry/executor.py`.
+
 **Files:**
 - Create: `src/carry/executor.py`
 - Test: `tests/test_carry_executor.py`
@@ -1139,7 +1141,7 @@ def test_adl_rank_alerts_once_and_does_not_close():
 def test_failed_close_keeps_leg_and_halts_with_critical_alert():
     ex, wd, st, alerts = setup()
     ex.trigger_adl("BTC", 1.0)
-    ex.fail_next("sell_spot", 2)
+    ex.fail_next("sell_spot", 3)          # executor tries 3 times
     actions = wd.check(st)
     assert any("FAILED" in a for a in actions)
     assert "BTC" in st.legs and st.mode == "HALTED"
@@ -1229,7 +1231,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: everything above. `decide(rates, in_position, held, cfg)`, `classify`, `Tier`, `check_hedge`, `HedgeStatus`, `Executor`, `HedgeError`, `Watchdog`, `CarryState`, `CoinLeg`.
-- Produces: `Engine(ex, insts, cfg, alert, state: CarryState | None = None, save: Callable[[CarryState], None] | None = None)` with `step(now_ms: int) -> list[str]`, `force_open(coin, notional, now_ms) -> bool`, `force_close(coin) -> bool`, `rearm() -> None`, attribute `state`. `step` order: (1) if not halted, any coin with no recorded leg whose exchange holdings are not FLAT → halt (alert, NO trading); (2) watchdog on recorded legs; (3) if halted return; (4) risk tier (alert on tier change; `>= CLOSE` closes all legs and halts); (5) per coin: `decide` → open only when tier is `NORMAL`, close when signalled; `held = int((now_ms - leg.entry_ts) / 28_800_000)`. A `HedgeError` anywhere halts the engine. `save(state)` is called at the end of every `step`. Mode: `FLAT` when no legs and not halted, `HEDGED` when legs exist, `HALTED` after any watchdog/risk/unexpected-holdings halt. A halted engine keeps running the watchdog on residual legs but never opens.
+- Produces: `Engine(ex, insts, cfg, alert, state: CarryState | None = None, save: Callable[[CarryState], None] | None = None)` with `step(now_ms: int) -> list[str]`, `force_open(coin, notional, now_ms) -> bool`, `force_close(coin) -> bool`, `rearm() -> None`, attribute `state`. `step` order: (1) if not halted, any coin with no recorded leg whose exchange holdings are not FLAT → halt (alert, NO trading); (2) watchdog on recorded legs; (3) if halted return; (4) risk tier (alert on tier change; `>= CLOSE` closes all legs and halts); (5) per coin: `decide` → open only when tier is `NORMAL`, close when signalled; `held = int((now_ms - leg.entry_ts) / 28_800_000)`. A `HedgeError` anywhere halts the engine, and so does any other unexpected exception (fail-safe). `save(state)` is called at the end of every `step`. Mode: `FLAT` when no legs and not halted, `HEDGED` when legs exist, `HALTED` after any watchdog/risk/unexpected-holdings halt. A halted engine keeps running the watchdog on residual legs but never opens.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1335,10 +1337,22 @@ def test_one_leg_failure_rolls_back_without_halting():
 def test_failed_rollback_halts_with_critical_alert():
     ex, eng, alerts = make()
     ex.fail_next("buy_spot")
-    ex.fail_next("buy_swap", 2)
+    ex.fail_next("buy_swap", 3)          # executor tries 3 times
     eng.step(0)
     assert eng.state.mode == "HALTED" and eng.state.legs == {}
     assert any("CRITICAL" in a for a in alerts)
+
+
+def test_unexpected_exchange_error_halts():
+    ex, eng, alerts = make()
+
+    def boom():
+        raise ConnectionError("boom")
+
+    ex.mgn_ratio = boom
+    eng.step(0)
+    assert eng.state.mode == "HALTED"
+    assert any("boom" in a for a in alerts)
 
 
 def test_unexpected_holdings_halt_without_trading():
@@ -1425,6 +1439,9 @@ class Engine:
         except HedgeError as e:
             self._halt(str(e))
             out = [f"HALT {e}"]
+        except Exception as e:  # noqa: BLE001 - fail safe: any unexpected error stops trading
+            self._halt(f"unexpected error: {e!r}")
+            out = ["HALT unexpected error"]
         if self.save:
             self.save(self.state)
         return out
@@ -1528,7 +1545,7 @@ class Engine:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `$PY -m pytest tests/test_carry_engine.py -q`
-Expected: 13 passed. Then run the whole carry suite: `$PY -m pytest tests/test_carry_*.py -q` — expected all pass (the pre-existing 26 tests plus this phase's new ones).
+Expected: 14 passed. Then run the whole carry suite: `$PY -m pytest tests/test_carry_*.py -q` — expected all pass (the pre-existing 26 tests plus this phase's new ones).
 
 - [ ] **Step 5: Commit**
 
