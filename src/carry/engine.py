@@ -1,0 +1,137 @@
+"""One loop iteration of the carry strategy: guard -> watchdog -> risk -> signal -> execute."""
+from __future__ import annotations
+
+from typing import Callable
+
+from carry.config import CarryConfig
+from carry.decision import decide
+from carry.exchange import Exchange
+from carry.executor import Executor, HedgeError
+from carry.hedge import HedgeStatus, check_hedge
+from carry.risk import Tier, classify
+from carry.state import CarryState, CoinLeg
+from carry.types import Instrument
+from carry.watchdog import Watchdog
+
+SETTLEMENT_MS = 8 * 3600 * 1000
+
+
+class Engine:
+    def __init__(self, ex: Exchange, insts: dict[str, Instrument], cfg: CarryConfig,
+                 alert: Callable[[str], None], state: CarryState | None = None,
+                 save: Callable[[CarryState], None] | None = None) -> None:
+        self.ex, self.insts, self.cfg, self.alert = ex, insts, cfg, alert
+        self.state = state or CarryState()
+        self.save = save
+        self.executor = Executor(ex, insts, cfg, alert)
+        self.watchdog = Watchdog(ex, insts, cfg, self.executor, alert)
+        self._last_tier = Tier.NORMAL
+
+    # --- public ----------------------------------------------------------
+    def step(self, now_ms: int) -> list[str]:
+        try:
+            out = self._step(now_ms)
+        except HedgeError as e:
+            self._halt(str(e))
+            out = [f"HALT {e}"]
+        except Exception as e:  # noqa: BLE001 - fail safe: any unexpected error stops trading
+            self._halt(f"unexpected error: {e!r}")
+            out = ["HALT unexpected error"]
+        if self.save:
+            self.save(self.state)
+        return out
+
+    def force_open(self, coin: str, notional: float, now_ms: int) -> bool:
+        if self.state.mode == "HALTED":
+            raise RuntimeError("engine is halted; rearm() first")
+        if coin in self.state.legs:
+            raise RuntimeError(f"{coin} already open")
+        try:
+            return self._open(coin, notional, now_ms) is not None
+        except HedgeError as e:
+            self._halt(str(e))
+            return False
+
+    def force_close(self, coin: str) -> bool:
+        leg = self.state.legs.get(coin)
+        if leg is None:
+            return True
+        if not self.executor.close(coin, leg):
+            self._halt(f"close {coin} failed")
+            return False
+        del self.state.legs[coin]
+        if not self.state.legs and self.state.mode == "HEDGED":
+            self.state.mode = "FLAT"
+        return True
+
+    def rearm(self) -> None:
+        if self.state.legs:
+            raise RuntimeError("legs still open; close them before rearm()")
+        for coin in self.cfg.coins:
+            inst = self.insts[coin]
+            st = check_hedge(self.ex.spot_balance(coin), self.ex.swap_contracts(coin), inst, self.cfg.drift_tol)
+            if st != HedgeStatus.FLAT:
+                raise RuntimeError(f"{coin} holdings on the exchange ({st.value}); resolve manually")
+        self.state.mode = "FLAT"
+        self.state.halted_reason = ""
+
+    # --- internals -------------------------------------------------------
+    def _halt(self, reason: str) -> None:
+        self.state.mode = "HALTED"
+        self.state.halted_reason = reason
+        self.alert(f"[CRITICAL] HALTED: {reason}")
+
+    def _open(self, coin: str, notional: float, now_ms: int) -> CoinLeg | None:
+        leg = self.executor.open(coin, notional, now_ms)
+        if leg is not None:
+            self.state.legs[coin] = leg
+            self.state.mode = "HEDGED"
+        return leg
+
+    def _step(self, now_ms: int) -> list[str]:
+        s = self.state
+        out: list[str] = []
+
+        if s.mode != "HALTED":
+            for coin in self.cfg.coins:
+                if coin in s.legs:
+                    continue
+                st = check_hedge(self.ex.spot_balance(coin), self.ex.swap_contracts(coin),
+                                 self.insts[coin], self.cfg.drift_tol)
+                if st != HedgeStatus.FLAT:
+                    self._halt(f"unexpected {coin} holdings ({st.value}) with no recorded position; not trading")
+                    return ["HALT unexpected holdings"]
+
+        out += self.watchdog.check(s)
+        if s.mode == "HALTED":
+            return out
+
+        tier = classify(self.ex.mgn_ratio(), bool(s.legs), self.cfg)
+        if tier != self._last_tier:
+            self.alert(f"risk tier {self._last_tier.name} -> {tier.name}")
+            self._last_tier = tier
+        if tier >= Tier.CLOSE:
+            for coin in list(s.legs):
+                if self.executor.close(coin, s.legs[coin]):
+                    del s.legs[coin]
+                    out.append(f"risk-closed {coin}")
+            self._halt(f"risk tier {tier.name}")
+            return out
+
+        for coin in self.cfg.coins:
+            leg = s.legs.get(coin)
+            held = int((now_ms - leg.entry_ts) / SETTLEMENT_MS) if leg else 0
+            action = decide(self.ex.funding_history(coin, self.cfg.window), leg is not None, held, self.cfg)
+            if action == "open" and tier == Tier.NORMAL:
+                out.append(f"opened {coin}" if self._open(coin, self.cfg.per_coin_notional, now_ms)
+                           else f"open {coin} failed")
+            elif action == "close" and leg is not None:
+                if self.executor.close(coin, leg):
+                    del s.legs[coin]
+                    out.append(f"closed {coin}")
+                else:
+                    self._halt(f"close {coin} failed")
+                    return out
+        if not s.legs and s.mode == "HEDGED":
+            s.mode = "FLAT"
+        return out
