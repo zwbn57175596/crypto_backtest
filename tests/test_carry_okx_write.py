@@ -1,5 +1,4 @@
 import inspect
-import math
 import re
 
 import pytest
@@ -38,6 +37,9 @@ class FakeTrade:
         self.visible_after = 1             # get_order finds the order once this many POSTs were made
         self.cancel_flip_at = None         # after this many cancels the order becomes `canceled`
         self.cancel_flip_row = {"state": "canceled", "accFillSz": "0", "avgPx": ""}
+        self.hidden = set()                # clOrdIds whose get_order answers empty data
+        self.notfound = set()              # clOrdIds whose get_order answers code 51603
+        self.order_list = []               # rows returned by get_order_list (filtered by instId)
 
     def place_order(self, **kw):
         self.placed.append(kw)
@@ -56,12 +58,18 @@ class FakeTrade:
         self.get_calls += 1
         if self.get_mode == "raise":
             raise ConnectionError("get_order down")
-        if self.get_mode == "empty":
+        if self.get_mode == "empty" or clOrdId in self.hidden:
             return ok([])
+        if clOrdId in self.notfound:
+            return {"code": "51603", "msg": "order does not exist", "data": []}
         if len(self.placed) < self.visible_after:
             return {"code": "51603", "msg": "order does not exist", "data": []}
         row = self.states[0] if len(self.states) == 1 else self.states.pop(0)
         return ok([dict(row, instId=instId, clOrdId=clOrdId)])
+
+    def get_order_list(self, instType="", uly="", instId="", ordType="", state="", after="", before="",
+                       limit="", instFamily=""):
+        return ok([dict(r) for r in self.order_list if not instId or r["instId"] == instId])
 
     def cancel_order(self, instId, ordId="", clOrdId=""):
         self.cancelled.append(clOrdId)
@@ -308,3 +316,121 @@ def test_place_order_kwargs_conform_to_python_okx_signature():
     sig = inspect.signature(trade_mod.TradeAPI.place_order)
     for kw in tr.placed:
         sig.bind(None, **kw)
+
+
+def _blocked_btc_swap(tr, ex, clock, cl="carryHIDDEN"):
+    """Register an unconfirmed BTC swap order whose get_order stays empty (unresolvable)."""
+    tr.hidden.add(cl)
+    ex._unconfirmed[cl] = ("BTC-USDT-SWAP", clock.now())
+    return cl
+
+
+def test_never_existed_order_stops_blocking_after_the_notfound_grace():
+    tr, alerts = FakeTrade(), []
+    tr.get_mode = "empty"
+    ex, clock = make(tr, order_timeout_sec=2.0, alert=alerts.append)
+    ex.sell_swap("BTC", 0.2)                               # registers an unconfirmed entry
+    cl = tr.placed[0]["clOrdId"]
+    tr.get_mode = "normal"
+    tr.visible_after = 2                                   # get_order: code 51603 until a 2nd POST exists
+    r = ex.sell_swap("BTC", 0.2)
+    assert r.error.startswith("BLOCKED") and len(tr.placed) == 1     # NOT_FOUND but younger than grace
+    clock.t += 61
+    r = ex.sell_swap("BTC", 0.2)
+    assert len(tr.placed) == 2 and r.ok
+    assert any(a.startswith("[INFO]") and cl in a and "resolved" in a for a in alerts)
+
+
+def test_empty_data_never_counts_as_notfound_even_after_the_grace():
+    tr = FakeTrade()
+    tr.get_mode = "empty"
+    ex, clock = make(tr, order_timeout_sec=2.0)
+    ex.sell_swap("BTC", 0.2)
+    clock.t += 3600
+    assert ex.sell_swap("BTC", 0.2).error.startswith("BLOCKED") and len(tr.placed) == 1
+
+
+def test_blocking_is_per_instrument_and_reduce_only_is_never_blocked():
+    tr = FakeTrade()
+    ex, clock = make(tr)
+    _blocked_btc_swap(tr, ex, clock)
+    r = ex.sell_swap("BTC", 0.2)
+    assert r.error.startswith("BLOCKED") and "BTC-USDT-SWAP" in r.error and tr.placed == []
+    assert ex.sell_swap("ETH", 0.2).ok
+    assert ex.buy_spot("BTC", 0.002).ok
+    assert ex.buy_swap("BTC", 0.2).ok                      # reduce-only: allowed while BTC swap is blocked
+    assert [p["instId"] for p in tr.placed] == ["ETH-USDT-SWAP", "BTC-USDT", "BTC-USDT-SWAP"]
+    assert ex.sell_swap("BTC", 0.2).error.startswith("BLOCKED")          # still blocked afterwards
+
+
+def test_reads_are_never_blocked():
+    tr = FakeTrade()
+    ex, clock = make(tr)
+    _blocked_btc_swap(tr, ex, clock)
+    assert ex.sell_swap("BTC", 0.2).error.startswith("BLOCKED")
+    assert ex.spot_balance("BTC") == pytest.approx(0.002) and ex.mgn_ratio() is None
+
+
+def test_adopt_pending_orders_registers_only_live_carry_orders_and_blocks():
+    tr, alerts = FakeTrade([{"state": "live", "accFillSz": "0", "avgPx": ""}]), []
+    tr.visible_after = 0
+    tr.order_list = [{"instId": "BTC-USDT-SWAP", "clOrdId": "carryABC", "state": "live"},
+                     {"instId": "BTC-USDT-SWAP", "clOrdId": "manual1", "state": "live"},
+                     {"instId": "BTC-USDT-SWAP", "clOrdId": "carryDEF", "state": "filled"}]
+    ex, _ = make(tr, alert=alerts.append)
+    assert ex.adopt_pending_orders() == ["carryABC"]
+    assert any("[CRITICAL]" in a and "carryABC" in a for a in alerts)
+    assert ex.sell_swap("BTC", 0.2).error.startswith("BLOCKED") and tr.placed == []
+    tr.states = [FILLED]                                   # the adopted order is now terminal
+    assert ex.sell_swap("BTC", 0.2).ok and len(tr.placed) == 1
+
+
+def test_pending_carry_orders_does_not_register():
+    tr = FakeTrade()
+    tr.order_list = [{"instId": "ETH-USDT", "clOrdId": "carryXYZ", "state": "partially_filled"}]
+    ex, _ = make(tr)
+    assert ex.pending_carry_orders() == ["carryXYZ"]
+    assert ex._unconfirmed == {}
+    assert ex.sell_swap("ETH", 0.2).ok                     # not blocked, nothing adopted
+
+
+def test_unconfirmed_result_reports_last_known_fill_and_price():
+    tr = FakeTrade([{"state": "partially_filled", "accFillSz": "0.05", "avgPx": "60000"}])
+    r = make(tr, order_timeout_sec=2.0)[0].sell_swap("BTC", 0.2)
+    assert r.error.startswith("UNCONFIRMED")
+    assert r.filled == pytest.approx(0.05) and r.avg_price == pytest.approx(60000.0)
+
+
+def test_ambiguous_placement_error_is_concatenated_with_the_terminal_state():
+    tr = FakeTrade([{"state": "canceled", "accFillSz": "0", "avgPx": ""}])
+    tr.errors = [ConnectionError("t")]
+    r = make(tr)[0].sell_swap("BTC", 0.2)
+    assert not r.ok and r.error.startswith("place_order: ConnectionError") and r.error.endswith("; state=canceled")
+
+
+def test_single_attempt_with_absent_order_returns_immediately():
+    tr = FakeTrade()
+    tr.errors = [ConnectionError("t")]
+    tr.visible_after = 99                                  # probe proves absence
+    ex, _ = make(tr, retries=1)
+    r = ex.sell_swap("BTC", 0.2)
+    assert not r.ok and "ConnectionError" in r.error
+    assert len(tr.placed) == 1 and tr.get_calls == 1 and tr.cancelled == [] and ex._unconfirmed == {}
+
+
+def test_malformed_terminal_row_does_not_raise():
+    tr = FakeTrade([{"state": "canceled", "accFillSz": "abc", "avgPx": "nan"}])
+    r = make(tr)[0].sell_swap("BTC", 0.2)
+    assert not r.ok and r.filled == 0.0 and r.error == "state=canceled"
+    tr2 = FakeTrade([{"state": "filled", "accFillSz": "x", "avgPx": None}])
+    r2 = make(tr2)[0].sell_swap("BTC", 0.2)
+    assert r2.filled == 0.0 and r2.avg_price == 0.0
+
+
+def test_cancel_and_confirm_does_not_sleep_after_the_last_round():
+    tr = FakeTrade([{"state": "live", "accFillSz": "0", "avgPx": ""}])
+    ex, clock = make(tr, order_timeout_sec=2.0)
+    ex.sell_swap("BTC", 0.2)
+    polls = int(2.0 / 0.5)                                 # 4 poll sleeps in the wait loop
+    assert clock.slept.count(0.5) == polls + 2             # + 2 (not 3) between the 3 cancel rounds
+

@@ -15,7 +15,8 @@ from carry.types import DEFAULT_INSTRUMENTS, Instrument, OrderResult
 
 TRANSIENT_CODES = frozenset({"50001", "50004", "50011", "50013", "50026"})   # verify on demo
 # UNVERIFIED on demo: OKX duplicate-clOrdId and order-not-found sCodes/codes. Isolated here so the
-# demo run can correct them; the adapter never relies on them for safety (it probes get_order first).
+# demo run can correct them. Safety relies on get_order read-after-write consistency (probe before any
+# re-POST) OR on OKX clOrdId uniqueness; the demo run must confirm both behaviours.
 DUPLICATE_CLORDID_CODES = frozenset({"51016"})
 NOT_FOUND_CODES = frozenset({"51603"})
 FUNDING_REFETCH_MIN_SEC = 60.0
@@ -38,6 +39,14 @@ def _f(x: Any) -> float:
     return v
 
 
+def _safe_f(x: Any) -> float:
+    """Like _f but an unparseable/non-finite value is 0.0 (used where a raise would hide an outcome)."""
+    try:
+        return _f(x)
+    except (ExchangeError, ValueError, TypeError):
+        return 0.0
+
+
 def _fmt(x: float) -> str:
     return format(Decimal(str(round(x, 12))).normalize(), "f")
 
@@ -56,7 +65,8 @@ class OkxExchange:
                  max_basis: float = 0.01, max_tick_age_sec: float = 30.0, order_timeout_sec: float = 10.0,
                  poll_sec: float = 0.5, retries: int = 3, backoff_sec: float = 0.5, read_ttl_sec: float = 1.0,
                  clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep,
-                 alert: Callable[[str], None] | None = None) -> None:
+                 alert: Callable[[str], None] | None = None,
+                 unconfirmed_notfound_grace_sec: float = 60.0) -> None:
         if retries < 1:
             raise ValueError("retries must be >= 1")
         self.trade, self.account, self.public, self.market = trade, account, public, market
@@ -68,7 +78,9 @@ class OkxExchange:
         self._reads: dict[tuple, tuple[float, Any]] = {}
         self._seq = 0
         self._alert_fn = alert
-        self._unconfirmed: dict[str, str] = {}       # clOrdId -> instId of orders not proven terminal
+        self.unconfirmed_notfound_grace_sec = unconfirmed_notfound_grace_sec
+        # clOrdId -> (instId, registered_at) of orders not proven terminal/absent
+        self._unconfirmed: dict[str, tuple[str, float]] = {}
         self._blocked_alerted: frozenset[str] | None = None
 
     def _alert(self, msg: str) -> None:
@@ -88,12 +100,15 @@ class OkxExchange:
             except Exception as e:  # noqa: BLE001 - network/timeouts are retried
                 last = ExchangeError(f"{what}: {type(e).__name__}: {e}")
             else:
-                code = str(resp.get("code", ""))
-                if code == "0":
-                    return resp
-                last = ExchangeError(f"{what}: code={code} msg={resp.get('msg', '')}", code=code)
-                if code not in TRANSIENT_CODES:
-                    raise last
+                if not isinstance(resp, dict):
+                    last = ExchangeError(f"{what}: malformed response {type(resp).__name__}")
+                else:
+                    code = str(resp.get("code", ""))
+                    if code == "0":
+                        return resp
+                    last = ExchangeError(f"{what}: code={code} msg={resp.get('msg', '')}", code=code)
+                    if code not in TRANSIENT_CODES:
+                        raise last
             if attempt < self.retries - 1:
                 self._sleep(self.backoff_sec * (2 ** attempt))
         if last is None:
@@ -215,13 +230,15 @@ class OkxExchange:
                reduce_only: bool = False, base_target: bool = False) -> OrderResult:
         if not math.isfinite(sz) or sz <= 0 or float(_fmt(sz)) <= 0:
             return OrderResult(False, error="invalid size")
-        pending = self._unconfirmed_pending()
-        if pending:
-            key = frozenset(pending)
-            if key != self._blocked_alerted:
-                self._blocked_alerted = key
-                self._alert(f"[CRITICAL] order placement BLOCKED: unconfirmed order(s) {sorted(pending)}")
-            return OrderResult(False, error=f"BLOCKED: unconfirmed order(s) {sorted(pending)}")
+        if not reduce_only:                        # reduce-only cannot add exposure: never blocked
+            pending = self._unconfirmed_pending(inst_id)
+            if pending:
+                key = frozenset(pending)
+                text = f"unconfirmed order(s) {sorted(pending)} on {inst_id}"
+                if key != self._blocked_alerted:
+                    self._blocked_alerted = key
+                    self._alert(f"[CRITICAL] order placement BLOCKED: {text}")
+                return OrderResult(False, error=f"BLOCKED: {text}")
         self._reads.clear()
         cl = self._next_cl_ord_id()
         kw: dict[str, Any] = dict(instId=inst_id, tdMode=td_mode, side=side, ordType="market",
@@ -291,7 +308,8 @@ class OkxExchange:
             return None                                          # not found yet / transient
 
     def _cancel_and_confirm(self, inst_id: str, cl: str) -> dict | None:
-        for _ in range(3):
+        rounds = 3
+        for i in range(rounds):
             try:
                 self._call(self.trade.cancel_order, "cancel_order", instId=inst_id, clOrdId=cl)
             except ExchangeError:
@@ -299,7 +317,8 @@ class OkxExchange:
             row = self._read_order(inst_id, cl)
             if row is not None and row.get("state") in TERMINAL_STATES:
                 return row
-            self._sleep(self.poll_sec)
+            if i < rounds - 1:
+                self._sleep(self.poll_sec)
         return None
 
     def _wait_terminal(self, inst_id: str, cl: str) -> OrderResult:
@@ -317,29 +336,71 @@ class OkxExchange:
         if last is None or last.get("state") not in TERMINAL_STATES:
             confirmed = self._cancel_and_confirm(inst_id, cl)
             if confirmed is None:
-                self._unconfirmed[cl] = inst_id
+                self._unconfirmed[cl] = (inst_id, self.clock())
                 self._alert(f"[CRITICAL] order {cl} on {inst_id} could not be confirmed terminal; "
                             "new orders are BLOCKED until it resolves")
-                try:
-                    filled = _f(last.get("accFillSz")) if last else 0.0
-                except (ExchangeError, ValueError, TypeError):
-                    filled = 0.0
-                return OrderResult(False, filled, 0.0,
+                filled = _safe_f(last.get("accFillSz")) if last else 0.0
+                avg = _safe_f(last.get("avgPx")) if last else 0.0
+                return OrderResult(False, filled, avg,
                                    "UNCONFIRMED: status unknown after cancel attempts; order may still be live")
             last = confirmed
         state = str(last.get("state"))
         good = state == "filled"
-        return OrderResult(good, _f(last.get("accFillSz")), _f(last.get("avgPx")),
+        return OrderResult(good, _safe_f(last.get("accFillSz")), _safe_f(last.get("avgPx")),
                            "" if good else f"state={state}")
 
-    def _unconfirmed_pending(self) -> list[str]:
-        for cl, inst_id in list(self._unconfirmed.items()):
-            row = self._read_order(inst_id, cl)
-            if row is not None and row.get("state") in TERMINAL_STATES:
+    def _lookup(self, inst_id: str, cl: str) -> tuple[str, dict | None]:
+        """("row", row) | ("notfound", None) (an explicit NOT_FOUND code) | ("unknown", None)."""
+        try:
+            data = self._call(self.trade.get_order, "get_order", instId=inst_id, clOrdId=cl)["data"]
+        except ExchangeError as e:
+            return ("notfound" if e.code in NOT_FOUND_CODES else "unknown"), None
+        except (KeyError, TypeError):
+            return "unknown", None
+        if data and isinstance(data[0], dict):
+            return "row", data[0]
+        return "unknown", None                                   # empty data is NOT proof of absence
+
+    def _unconfirmed_pending(self, inst_id: str | None = None) -> list[str]:
+        """Resolve unconfirmed entries (for `inst_id`, or all) and return those still unresolved."""
+        now = self.clock()
+        for cl, (inst, registered_at) in list(self._unconfirmed.items()):
+            if inst_id is not None and inst != inst_id:
+                continue
+            kind, row = self._lookup(inst, cl)
+            terminal = kind == "row" and row is not None and row.get("state") in TERMINAL_STATES
+            absent = kind == "notfound" and now - registered_at >= self.unconfirmed_notfound_grace_sec
+            if terminal or absent:
                 del self._unconfirmed[cl]
+                self._alert(f"[INFO] unconfirmed order {cl} on {inst} resolved")
         if not self._unconfirmed:
             self._blocked_alerted = None
-        return list(self._unconfirmed)
+        return [cl for cl, (inst, _) in self._unconfirmed.items() if inst_id is None or inst == inst_id]
+
+    def _find_pending_carry(self) -> list[tuple[str, str]]:
+        found: list[tuple[str, str]] = []
+        for inst in self.insts.values():
+            for inst_id in (inst.spot_id, inst.swap_id):
+                rows = self._call(self.trade.get_order_list, f"order list {inst_id}", instId=inst_id).get("data") or []
+                for r in rows:
+                    cl = str(r.get("clOrdId", ""))
+                    if cl.startswith("carry") and r.get("state") not in TERMINAL_STATES:
+                        found.append((cl, inst_id))
+        return found
+
+    def pending_carry_orders(self) -> list[str]:
+        """clOrdIds of live carry orders on the exchange, WITHOUT registering them (preflight use)."""
+        return [cl for cl, _ in self._find_pending_carry()]
+
+    def adopt_pending_orders(self) -> list[str]:
+        """Restart recovery: register live carry orders found on the exchange as unconfirmed."""
+        found = self._find_pending_carry()
+        for cl, inst_id in found:
+            self._unconfirmed.setdefault(cl, (inst_id, self.clock()))
+        if found:
+            self._alert(f"[CRITICAL] adopted pending carry order(s) {[cl for cl, _ in found]}; "
+                        "new orders on those instruments are BLOCKED until they resolve")
+        return [cl for cl, _ in found]
 
     def clear_unconfirmed(self) -> None:
         """Operator override: forget unconfirmed orders (the operator has verified them by hand)."""

@@ -262,3 +262,21 @@ def test_constructor_validation_and_defaults():
         OkxExchange(None, None, None, None, retries=0)
     assert OkxExchange(None, None, None, None).spot_td_mode == "cash"
 
+
+def test_mgn_ratio_non_string_raw_value_is_none():
+    for raw in ([1], {"a": 1}, object()):
+        acc = FakeAccount()
+        acc.mgn = raw
+        ex, _, _ = make(account=acc)
+        assert ex.mgn_ratio() is None
+
+
+def test_non_dict_response_becomes_exchange_error():
+    class Weird:
+        def get_ticker(self, instId):
+            return "oops"
+
+    ex, _, _ = make(market=Weird())
+    with pytest.raises(ExchangeError):
+        ex.price("BTC")
+
