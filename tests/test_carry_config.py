@@ -27,3 +27,18 @@ def test_rejects_notional_above_cap():
 def test_rejects_nonpositive_deploy():
     with pytest.raises(ValueError):
         CarryConfig(deploy_usdt=0.0)
+
+
+def test_open_retry_defaults():
+    c = CarryConfig()
+    assert c.open_cooldown_ms == 1_800_000 and c.max_open_fails == 3
+
+
+def test_rejects_negative_open_cooldown():
+    with pytest.raises(ValueError):
+        CarryConfig(open_cooldown_ms=-1)
+
+
+def test_rejects_nonpositive_max_open_fails():
+    with pytest.raises(ValueError):
+        CarryConfig(max_open_fails=0)

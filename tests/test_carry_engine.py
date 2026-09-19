@@ -155,3 +155,138 @@ def test_state_is_saved_after_every_step():
     eng.step(0)
     eng.step(1000)
     assert len(saved) == 2 and saved[-1].mode == "HEDGED"
+
+
+# --- fix round 1 -----------------------------------------------------------
+def n_calls(ex, op, coin):
+    return sum(1 for c in ex.calls if c[0] == op and c[1] == coin)
+
+
+def test_open_retry_storm_is_throttled_then_halts():
+    cfg = CarryConfig()
+    ex, eng, _ = make()
+    ex.fail_next("buy_spot", 200)
+    for i in range(10):
+        eng.step(i * 2000)
+    assert n_calls(ex, "sell_swap", "BTC") == 1 and n_calls(ex, "sell_swap", "ETH") == 1
+    assert eng.state.mode != "HALTED"
+    t = cfg.open_cooldown_ms
+    eng.step(t)                                        # cooldown elapsed: second attempt
+    assert n_calls(ex, "sell_swap", "BTC") == 2
+    eng.step(2 * t + 1)                                # third consecutive failure
+    assert eng.state.mode == "HALTED" and "BTC" in eng.state.halted_reason
+    assert eng.state.legs == {}
+
+
+def test_failed_close_in_signal_branch_halts_and_keeps_leg():
+    ex, eng, _ = make()
+    eng.step(0)
+    ex.funding = dict(ZERO)
+    ex.fail_next("sell_spot", 3)
+    eng.step(3 * DAY)
+    assert eng.state.mode == "HALTED"
+    assert "BTC" in eng.state.legs                     # first coin's close failed; step returned
+
+
+def test_failed_risk_close_is_retried_while_halted():
+    ex, eng, _ = make()
+    eng.step(0)
+    ex.mgn = 2.0
+    ex.fail_next("sell_spot", 3)
+    eng.step(1000)
+    assert eng.state.mode == "HALTED" and set(eng.state.legs) == {"BTC"}   # ETH closed, BTC failed
+    eng.step(3000)                                     # still HALTED, tier still CLOSE: retries
+    assert eng.state.legs == {} and eng.state.mode == "HALTED"
+    assert ex.spot["BTC"] < 1e-5 and ex.swap["BTC"] == pytest.approx(0.0)
+
+
+def test_raising_alert_callable_does_not_break_step_or_save():
+    ex = FakeExchange(funding=dict(HIGH))
+    saved = []
+
+    def bad_alert(msg):
+        raise RuntimeError("alerter down")
+
+    eng = Engine(ex, DEFAULT_INSTRUMENTS, CarryConfig(), bad_alert,
+                 save=lambda s: saved.append(copy.deepcopy(s)))
+    eng.step(0)
+    ex.trigger_adl("BTC", 1.0)
+    eng.step(1000)                                     # must not raise
+    assert eng.state.mode == "HALTED" and "BTC" not in eng.state.legs
+    assert len(saved) == 2 and saved[-1].mode == "HALTED"
+
+
+def test_raising_save_is_reported_not_raised():
+    def bad_save(state):
+        raise OSError("disk full")
+
+    ex, eng, alerts = make(save=bad_save)
+    eng.step(0)                                        # must not raise
+    assert any("CRITICAL" in a and "state save failed" in a for a in alerts)
+
+
+def test_watchdog_error_path_halts_and_saves():
+    saved = []
+    ex, eng, _ = make(save=lambda s: saved.append(copy.deepcopy(s)))
+    eng.step(0)
+    ex.trigger_adl("BTC", 1.0)
+    orig = ex.swap_contracts
+
+    def flaky(coin):
+        if coin == "ETH":
+            raise ConnectionError("eth down")
+        return orig(coin)
+
+    ex.swap_contracts = flaky
+    eng.step(1000)
+    assert eng.state.mode == "HALTED"
+    assert "BTC" not in eng.state.legs and "ETH" in eng.state.legs
+    assert set(saved[-1].legs) == {"ETH"} and saved[-1].mode == "HALTED"
+
+
+def test_rearm_refuses_when_exchange_not_flat():
+    ex, eng, _ = make()
+    ex.spot["BTC"] = 0.5
+    eng.step(0)
+    assert eng.state.mode == "HALTED" and eng.state.legs == {}
+    with pytest.raises(RuntimeError):
+        eng.rearm()
+    assert eng.state.mode == "HALTED"
+
+
+def test_force_close_failure_keeps_leg_and_halts():
+    ex, eng, _ = make(funding=dict(ZERO))
+    assert eng.force_open("BTC", 100.0, now_ms=0) is True
+    ex.fail_next("sell_spot", 3)
+    assert eng.force_close("BTC") is False
+    assert "BTC" in eng.state.legs and eng.state.mode == "HALTED"
+
+
+def test_force_open_refused_for_unknown_coin_and_non_normal_tier():
+    ex, eng, _ = make(funding=dict(ZERO))
+    with pytest.raises(ValueError):
+        eng.force_open("DOGE", 100.0, now_ms=0)
+    assert eng.force_open("BTC", 100.0, now_ms=0) is True
+    ex.mgn = 3.0                                       # WARN tier
+    with pytest.raises(RuntimeError):
+        eng.force_open("ETH", 100.0, now_ms=1000)
+    assert "ETH" not in eng.state.legs
+
+
+def test_backwards_clock_does_not_raise_or_close_early():
+    ex, eng, _ = make()
+    eng.step(5 * DAY)
+    ex.funding = dict(ZERO)
+    eng.step(1 * DAY)                                  # clock went backwards
+    assert set(eng.state.legs) == {"BTC", "ETH"} and eng.state.mode == "HEDGED"
+
+
+def test_manual_ops_are_persisted():
+    saved = []
+    ex, eng, _ = make(funding=dict(ZERO), save=lambda s: saved.append(copy.deepcopy(s)))
+    eng.force_open("BTC", 100.0, now_ms=0)
+    assert len(saved) == 1 and "BTC" in saved[-1].legs
+    eng.force_close("BTC")
+    assert len(saved) == 2 and saved[-1].legs == {}
+    eng.rearm()
+    assert len(saved) == 3
