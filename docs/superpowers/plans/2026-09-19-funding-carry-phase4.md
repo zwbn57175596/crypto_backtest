@@ -1569,13 +1569,15 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 
 ### Task 7: Preflight and CLI
 
+> **Amendments from the Batch B/A reviews (binding, apply while implementing):** (1) `make_clients` is called as `make_clients(env, cfg, alerter)` and `default_clients(env, cfg, alert=None)` passes `alert=alerter` to `OkxExchange` so the adapter can raise CRITICAL alerts when an order cannot be confirmed; the code and test lambdas below already use the 3-argument form. (2) The default spot trade mode is `"cash"`. (3) The CLI must call `alerter.flush()` (if the alerter has it) before returning from EVERY command path — `alert-test`, `preflight`, `status`, the manual commands and the end of `run` including SIGTERM/SIGINT shutdown — implement it once by wrapping the command execution in `try/finally`; add a test that a fake alerter's `flush` was called after `alert-test` and after `run --max-steps 1`. (4) `rearm` must also call `exchange.clear_unconfirmed()` when the exchange object has that method (the adapter blocks new orders while an order is unconfirmed) — add a test with a fake exchange exposing `clear_unconfirmed`. (5) The read-only guard already permits trade verbs in `src/carry/cli.py` and `src/carry/okx_exchange.py` only.
+
 **Files:**
 - Create: `src/carry/preflight.py`, `src/carry/cli.py`, `src/carry/__main__.py`
 - Test: `tests/test_carry_preflight.py`, `tests/test_carry_cli.py`
 
 **Interfaces:**
 - Consumes: `OkxExchange`/`ExchangeError` (only in `default_clients`), `build_alerter`, `load_state_or_halt`, `reconcile`, `exposure_report`, `Runner`, `InstanceLock`, `Engine`, `save_state`, `CarryConfig`, `DEFAULT_INSTRUMENTS`, `FakeExchange` (tests).
-- Produces: `PreflightResult(problems: list[str], warnings: list[str])` with `ok` property; `preflight(account, public, cfg, insts) -> PreflightResult` flags as PROBLEMS: `acctLv != "3"`, `autoLoan` on, `posMode != "net_mode"`, any balance of a `cfg.coins` currency `>= spot_min`, USDT available `< 1.2 * cfg.deploy_usdt`, any non-zero SWAP position, instrument specs (ctVal, lotSz, minSz for swap; lotSz, minSz for spot) differing from `insts`, and any API read failure ("could not read ...: <ExcClass>"); non-BTC/ETH non-USDT balances are WARNINGS. `Clients(exchange, account, public)` dataclass; `load_env_file(path) -> dict[str, str]` (`KEY=VALUE`, optional `export`, `#` comments, matching quotes stripped); `load_config(path) -> CarryConfig` (JSON; unknown keys -> `ValueError`; `coins` list -> tuple); `default_clients(env, cfg) -> Clients` (needs `OKX_API_KEY/SECRET/PASSPHRASE`, else `SystemExit` with a clear message; `OKX_DEMO` in `1/true/yes` -> flag `"1"`; builds python-okx `TradeAPI/AccountAPI/PublicAPI/MarketAPI` with `flag=` and `debug=False`, imports `okx` lazily; `spot_td_mode` from `OKX_SPOT_TD_MODE`, default `"cross"`; the `OkxExchange` gets `order_timeout_sec`, `read_ttl_sec` defaults). `main(argv=None, env=None, *, make_clients=None, make_alerter=None, out=print, clock=time.time, sleep=time.sleep) -> int`. Global options: `--config PATH`, `--env-file PATH`, `--log PATH` (default `live_state/carry.log`). Commands: `alert-test`, `preflight` (exit 0/1), `status` (no lock; prints `exposure_report`), `run [--max-steps N] [--heartbeat-sec S]`, `force-open COIN NOTIONAL`, `force-close COIN`, `rearm`. `run`, `force-*`, `rearm` first acquire `InstanceLock(cfg.state_path + ".lock")` (held -> print message, exit 3), build the engine (`load_state_or_halt`, `reconcile`, `Engine(..., save=save_state)`), and return 1 with the message on `ValueError`/`RuntimeError`. `run` installs SIGTERM/SIGINT handlers that stop the loop after the current step and restores the old handlers afterwards; `--max-steps` bounds the loop (for demos/tests). Config/env errors -> exit 2. `src/carry/__main__.py` is `from carry.cli import main; raise SystemExit(main())`.
+- Produces: `PreflightResult(problems: list[str], warnings: list[str])` with `ok` property; `preflight(account, public, cfg, insts) -> PreflightResult` flags as PROBLEMS: `acctLv != "3"`, `autoLoan` on, `posMode != "net_mode"`, any balance of a `cfg.coins` currency `>= spot_min`, USDT available `< 1.2 * cfg.deploy_usdt`, any non-zero SWAP position, instrument specs (ctVal, lotSz, minSz for swap; lotSz, minSz for spot) differing from `insts`, and any API read failure ("could not read ...: <ExcClass>"); non-BTC/ETH non-USDT balances are WARNINGS. `Clients(exchange, account, public)` dataclass; `load_env_file(path) -> dict[str, str]` (`KEY=VALUE`, optional `export`, `#` comments, matching quotes stripped); `load_config(path) -> CarryConfig` (JSON; unknown keys -> `ValueError`; `coins` list -> tuple); `default_clients(env, cfg, alert=None) -> Clients` (needs `OKX_API_KEY/SECRET/PASSPHRASE`, else `SystemExit` with a clear message; `OKX_DEMO` in `1/true/yes` -> flag `"1"`; builds python-okx `TradeAPI/AccountAPI/PublicAPI/MarketAPI` with `flag=` and `debug=False`, imports `okx` lazily; `spot_td_mode` from `OKX_SPOT_TD_MODE`, default `"cash"` (the adapter's default); the `OkxExchange` also gets `alert=alerter`; it gets `order_timeout_sec`, `read_ttl_sec` defaults). `main(argv=None, env=None, *, make_clients=None, make_alerter=None, out=print, clock=time.time, sleep=time.sleep) -> int`. Global options: `--config PATH`, `--env-file PATH`, `--log PATH` (default `live_state/carry.log`). Commands: `alert-test`, `preflight` (exit 0/1), `status` (no lock; prints `exposure_report`), `run [--max-steps N] [--heartbeat-sec S]`, `force-open COIN NOTIONAL`, `force-close COIN`, `rearm`. `run`, `force-*`, `rearm` first acquire `InstanceLock(cfg.state_path + ".lock")` (held -> print message, exit 3), build the engine (`load_state_or_halt`, `reconcile`, `Engine(..., save=save_state)`), and return 1 with the message on `ValueError`/`RuntimeError`. `run` installs SIGTERM/SIGINT handlers that stop the loop after the current step and restores the old handlers afterwards; `--max-steps` bounds the loop (for demos/tests). Config/env errors -> exit 2. `src/carry/__main__.py` is `from carry.cli import main; raise SystemExit(main())`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1697,7 +1699,7 @@ def setup(tmp_path, funding=None, **cfg_over):
     cfg_path.write_text(json.dumps(cfg))
     ex = FakeExchange(funding=dict(funding or {}))
     alerts, out = [], []
-    kw = dict(make_clients=lambda env, c: Clients(ex, FakeAccount(), FakePublic()),
+    kw = dict(make_clients=lambda env, c, a: Clients(ex, FakeAccount(), FakePublic()),
               make_alerter=lambda env, log: alerts.append,
               out=out.append, sleep=lambda s: None)
     argv = ["--config", str(cfg_path)]
@@ -1736,7 +1738,7 @@ def test_alert_test_sends_a_message(tmp_path):
 def test_preflight_command_exit_codes(tmp_path):
     ex, alerts, out, kw, argv = setup(tmp_path)
     assert main(argv + ["preflight"], env={}, **kw) == 0
-    bad = dict(kw, make_clients=lambda env, c: Clients(ex, FakeAccount(acct_lv="2"), FakePublic()))
+    bad = dict(kw, make_clients=lambda env, c, a: Clients(ex, FakeAccount(acct_lv="2"), FakePublic()))
     assert main(argv + ["preflight"], env={}, **bad) == 1
     assert any("acctLv" in line for line in out)
 
@@ -1950,7 +1952,7 @@ def load_config(path: str | Path) -> CarryConfig:
     return CarryConfig(**data)
 
 
-def default_clients(env: Mapping[str, str], cfg: CarryConfig) -> Clients:
+def default_clients(env: Mapping[str, str], cfg: CarryConfig, alert: Callable[[str], None] | None = None) -> Clients:
     key, secret, phrase = (env.get(k) for k in ("OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE"))
     if not (key and secret and phrase):
         raise SystemExit("OKX_API_KEY / OKX_API_SECRET / OKX_API_PASSPHRASE must be set")
@@ -1965,7 +1967,7 @@ def default_clients(env: Mapping[str, str], cfg: CarryConfig) -> Clients:
     public = PublicData.PublicAPI(flag=flag, debug=False)
     market = MarketData.MarketAPI(flag=flag, debug=False)
     ex = OkxExchange(trade, account, public, market, DEFAULT_INSTRUMENTS,
-                     spot_td_mode=env.get("OKX_SPOT_TD_MODE", "cross"))
+                     spot_td_mode=env.get("OKX_SPOT_TD_MODE", "cash"), alert=alert)
     return Clients(ex, account, public)
 
 
@@ -2030,7 +2032,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         out(f"channels: {getattr(alerter, 'channels', [])}")
         return 0
 
-    clients = (make_clients or default_clients)(env, cfg)
+    clients = (make_clients or default_clients)(env, cfg, alerter)
 
     if args.cmd == "preflight":
         res = preflight(clients.account, clients.public, cfg, DEFAULT_INSTRUMENTS)
@@ -2186,7 +2188,7 @@ OKX_API_SECRET=
 OKX_API_PASSPHRASE=
 # Set OKX_DEMO=1 to use OKX demo trading (needs a demo-trading API key)
 OKX_DEMO=
-# Spot trade mode used for spot orders (verify on demo; default cross)
+# Spot trade mode used for spot orders (verify on demo; default cash)
 OKX_SPOT_TD_MODE=
 # Telegram notifications
 TELEGRAM_BOT_TOKEN=
@@ -2247,10 +2249,22 @@ python -m carry --config config/carry.json --env-file ~/.secrets/carry.env statu
 ## Demo cycle (do this BEFORE live money; needs a demo-trading API key, set `OKX_DEMO=1`)
 1. `preflight`, then `force-open BTC 100`: check `status` shows a hedge (`hedge=OK`), spot and perp quantities match.
 2. Record `mgnRatio` from `status` with the position open. It sets the units and thresholds: if the value is a percentage (e.g. 350) set `mgn_unit` to 100 in the config; calibrate `mgn_warn` / `mgn_close` / `mgn_emergency` from the observed value and a price-shock estimate. Do not run live until this is done.
-3. Check spot orders work with `OKX_SPOT_TD_MODE` (`cross` by default; try `cash` if orders are rejected) and that spot buys deduct the fee in kind (the hedge stays within `drift_tol`).
+3. Check spot orders work with `OKX_SPOT_TD_MODE` (`cash` by default because the spot leg is unlevered; try `cross` only if `cash` orders are rejected) and that spot buys deduct the fee in kind (the hedge stays within `drift_tol`).
 4. Simulate ADL by closing the perp leg by hand: within a few polls the bot must sell the spot, alert CRITICAL, and go HALTED. Then `force-close`, `rearm`.
 5. Restart mid-position: the bot must adopt the healthy hedge or halt and alert (see `[CRITICAL] startup`).
 6. Kill the network briefly: expect a halt with alerts, no unhedged exposure.
+
+## API assumptions the demo run must confirm (from the adapter review; record each result in the demo findings doc)
+1. `clOrdId` uniqueness: re-POST a filled order's clOrdId — rejected (which code) or accepted as a new order? Confirms `DUPLICATE_CLORDID_CODES`.
+2. Rejection envelope: an insufficient-balance order — top-level `code` and row `sCode`? Confirms the adapter's row-level verdict.
+3. `get_order` by `clOrdId` right after placement (visibility delay) and the shape/code for a non-existent order (`NOT_FOUND_CODES`, empty data?).
+4. Spot market buy with `tgtCcy=base_ccy` under `cash` AND `cross`: fill size in coins; fee taken in the base coin (`cashBal` rises by `sz*(1-fee)`); `cross` must not borrow with autoLoan off.
+5. Swap orders: `sz` in contracts, net mode with empty `posSide`, `reduceOnly="true"` on a market buy, behaviour when the size exceeds the position, `accFillSz` in contracts.
+6. Cancel path: cancelling an already-filled order (code) and `cancel_order` by `clOrdId` alone.
+7. Read fields: `details[].cashBal` is the total incl. coin frozen by live orders; `mgnRatio` scale (ratio vs percent -> `mgn_unit`); `pos` sign in net mode; `adl` range.
+8. Funding history: does it include the unsettled period? `fundingRate` vs `realizedRate` — which was actually paid?
+9. `TRANSIENT_CODES` (50001/50004/50011/50013/50026) and that rate limiting surfaces as 50011, not an HTTP error with a non-JSON body.
+10. Account settings: swap leverage for the instruments, position mode net, `autoLoan` off; API clients are built with `debug=False` (never log signed headers).
 
 ## Live (small)
 1. Stop other users of the account, run `preflight`, `alert-test`.
