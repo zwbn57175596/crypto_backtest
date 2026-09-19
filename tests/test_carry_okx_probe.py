@@ -58,18 +58,44 @@ def test_render_markdown_mentions_key_facts():
         assert needle in md
 
 
-def test_probe_code_is_read_only():
+TRADE_VERBS = ("place_order", "cancel_order", "TradeAPI", "import okx.Trade",
+               "from okx import Trade", "okx.Trade")
+TRADE_EXEMPT = ("src/carry/okx_exchange.py", "src/carry/cli.py")
+ALWAYS_BANNED = ("place_multiple_orders", "amend_order", "close_positions", "set_leverage",
+                 "set_account_level", "borrow_repay", "funds_transfer", "withdrawal",
+                 "purchase_redempt", "SubAccountAPI", "FundingAPI", "okx.Funding",
+                 "okx.SubAccount", "import okx.Funding", "import okx.SubAccount",
+                 "from okx import Funding", "from okx import SubAccount")
+
+
+def find_violations(rel_path: str, text: str) -> list[str]:
+    """Banned tokens in `text`: ALWAYS_BANNED everywhere, TRADE_VERBS outside TRADE_EXEMPT."""
+    found = [b for b in ALWAYS_BANNED if b in text]
+    if rel_path not in TRADE_EXEMPT:
+        found += [b for b in TRADE_VERBS if b in text]
+    return found
+
+
+def _scanned_files() -> tuple[Path, list[Path]]:
     root = Path(__file__).resolve().parents[1]
     files = sorted(root.glob("src/carry/*.py")) + sorted(root.glob("scripts/carry_*.py"))
     assert files, "no carry sources found to scan"
-    banned_names = ("place_order", "place_multiple_orders", "amend_order", "cancel_order",
-                    "close_positions", "set_leverage", "set_account_level", "borrow_repay",
-                    "funds_transfer", "withdrawal", "purchase_redempt",
-                    "TradeAPI", "FundingAPI", "SubAccountAPI")
-    banned_imports = ("import okx.Trade", "import okx.Funding", "import okx.SubAccount",
-                      "from okx import Trade", "from okx import Funding",
-                      "from okx import SubAccount", "okx.Trade", "okx.Funding", "okx.SubAccount")
+    return root, files
+
+
+def test_probe_code_is_read_only():
+    root, files = _scanned_files()
     for path in files:
-        text = path.read_text()
-        for banned in banned_names + banned_imports:
-            assert banned not in text, f"{banned} found in {path.relative_to(root)}"
+        rel = path.relative_to(root).as_posix()
+        assert find_violations(rel, path.read_text()) == [], f"banned token(s) in {rel}"
+
+
+def test_adapter_is_the_sanctioned_trade_caller():
+    text = (Path(__file__).resolve().parents[1] / "src/carry/okx_exchange.py").read_text()
+    assert "place_order" in text and "cancel_order" in text
+
+
+def test_guard_flags_trade_verb_in_non_exempt_module():
+    assert find_violations("src/carry/other.py", "self.trade.place_order(**kw)") == ["place_order"]
+    assert find_violations("src/carry/okx_exchange.py", "self.trade.place_order(**kw)") == []
+    assert find_violations("src/carry/okx_exchange.py", "x.set_leverage()") == ["set_leverage"]
