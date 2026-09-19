@@ -60,8 +60,16 @@ def test_render_markdown_mentions_key_facts():
 
 def test_probe_code_is_read_only():
     root = Path(__file__).resolve().parents[1]
-    for rel in ("src/carry/okx_probe.py", "scripts/carry_research_probe.py"):
-        text = (root / rel).read_text()
-        for banned in ("place_order", "TradeAPI", "FundingAPI", "cancel_order", "set_leverage",
-                       "set_account_level", "borrow_repay"):
-            assert banned not in text, f"{banned} found in {rel}"
+    files = sorted(root.glob("src/carry/*.py")) + sorted(root.glob("scripts/carry_*.py"))
+    assert files, "no carry sources found to scan"
+    banned_names = ("place_order", "place_multiple_orders", "amend_order", "cancel_order",
+                    "close_positions", "set_leverage", "set_account_level", "borrow_repay",
+                    "funds_transfer", "withdrawal", "purchase_redempt",
+                    "TradeAPI", "FundingAPI", "SubAccountAPI")
+    banned_imports = ("import okx.Trade", "import okx.Funding", "import okx.SubAccount",
+                      "from okx import Trade", "from okx import Funding",
+                      "from okx import SubAccount", "okx.Trade", "okx.Funding", "okx.SubAccount")
+    for path in files:
+        text = path.read_text()
+        for banned in banned_names + banned_imports:
+            assert banned not in text, f"{banned} found in {path.relative_to(root)}"
