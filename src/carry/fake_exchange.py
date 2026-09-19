@@ -4,6 +4,9 @@ from __future__ import annotations
 from carry.types import OrderResult
 
 
+ORDER_OPS = frozenset({"sell_swap", "buy_swap", "buy_spot", "sell_spot"})
+
+
 class FakeExchange:
     def __init__(self, prices: dict[str, float] | None = None,
                  funding: dict[str, list[float]] | None = None,
@@ -20,10 +23,17 @@ class FakeExchange:
         self._partial: dict[str, float] = {}
 
     # --- fault injection -------------------------------------------------
+    @staticmethod
+    def _check_op(op: str) -> None:
+        if op not in ORDER_OPS:
+            raise ValueError(f"unknown order op {op!r}; expected one of {sorted(ORDER_OPS)}")
+
     def fail_next(self, op: str, n: int = 1) -> None:
+        self._check_op(op)
         self._fail[op] = n
 
     def partial_next(self, op: str, fraction: float) -> None:
+        self._check_op(op)
         self._partial[op] = fraction
 
     def trigger_adl(self, coin: str, fraction: float) -> None:
@@ -44,7 +54,7 @@ class FakeExchange:
         return self.prices[coin]
 
     def funding_history(self, coin: str, n: int) -> list[float]:
-        return list(self.funding.get(coin, []))[-n:]
+        return list(self.funding.get(coin, []))[-n:] if n > 0 else []
 
     def spot_balance(self, coin: str) -> float:
         return self.spot.get(coin, 0.0)

@@ -1,6 +1,7 @@
 """Account-level margin-ratio risk tiers."""
 from __future__ import annotations
 
+import math
 from enum import IntEnum
 
 from carry.config import CarryConfig
@@ -16,7 +17,7 @@ class Tier(IntEnum):
 def classify(mgn_ratio: float | None, has_position: bool, cfg: CarryConfig) -> Tier:
     if not has_position:
         return Tier.NORMAL
-    if mgn_ratio is None:
+    if mgn_ratio is None or math.isnan(mgn_ratio):
         return Tier.WARN
     r = mgn_ratio / cfg.mgn_unit
     if r <= cfg.mgn_emergency:

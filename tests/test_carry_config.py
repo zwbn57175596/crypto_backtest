@@ -42,3 +42,18 @@ def test_rejects_negative_open_cooldown():
 def test_rejects_nonpositive_max_open_fails():
     with pytest.raises(ValueError):
         CarryConfig(max_open_fails=0)
+
+
+def test_rejects_empty_coins():
+    with pytest.raises(ValueError):
+        CarryConfig(coins=())
+
+
+def test_rejects_bad_window():
+    with pytest.raises(ValueError):
+        CarryConfig(window=0)
+
+
+def test_rejects_negative_min_hold():
+    with pytest.raises(ValueError):
+        CarryConfig(min_hold=-1)

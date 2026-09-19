@@ -11,7 +11,7 @@ from carry.hedge import HedgeStatus, check_hedge
 from carry.risk import Tier, classify
 from carry.state import CarryState, CoinLeg
 from carry.types import Instrument
-from carry.watchdog import Watchdog
+from carry.watchdog import Watchdog, WatchdogError
 
 SETTLEMENT_MS = 8 * 3600 * 1000
 
@@ -20,6 +20,9 @@ class Engine:
     def __init__(self, ex: Exchange, insts: dict[str, Instrument], cfg: CarryConfig,
                  alert: Callable[[str], None], state: CarryState | None = None,
                  save: Callable[[CarryState], None] | None = None) -> None:
+        missing = [c for c in cfg.coins if c not in insts]
+        if missing:
+            raise ValueError(f"no instrument spec for configured coins: {missing}")
         self.ex, self.insts, self.cfg, self.alert = ex, insts, cfg, alert
         self.state = state if state is not None else CarryState()
         self.save = save
@@ -88,6 +91,9 @@ class Engine:
                     raise RuntimeError(f"{coin} holdings on the exchange ({st.value}); resolve manually")
             self.state.mode = "FLAT"
             self.state.halted_reason = ""
+            self._open_fails.clear()
+            self._open_block_until.clear()
+            self._last_tier = Tier.NORMAL
         finally:
             self._save()
 
@@ -140,7 +146,12 @@ class Engine:
                     self._halt(f"unexpected {coin} holdings ({st.value}) with no recorded position; not trading")
                     return ["HALT unexpected holdings"]
 
-        out += self.watchdog.check(s)
+        wd_err: WatchdogError | None = None
+        try:
+            out += self.watchdog.check(s)
+        except WatchdogError as e:
+            wd_err = e
+            self._halt(f"watchdog could not verify every coin: {e}")
 
         # Risk is managed even when halted: a residual leg must keep being closed at CLOSE+.
         if s.legs or s.mode != "HALTED":
@@ -158,7 +169,7 @@ class Engine:
             if s.mode != "HALTED":
                 self._halt(f"risk tier {tier.name}")
             return out
-        if s.mode == "HALTED":
+        if wd_err is not None or s.mode == "HALTED":
             return out
 
         for coin in self.cfg.coins:

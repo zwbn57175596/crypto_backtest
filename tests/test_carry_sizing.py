@@ -40,3 +40,15 @@ def test_drift():
     assert drift(0.01501502, 1.5, BTC) == pytest.approx(0.001, rel=0.02)
     assert drift(0.015, 0.0, BTC) == math.inf
     assert drift(0.0, 0.0, BTC) == 0.0
+
+
+@pytest.mark.parametrize("price", [0.0, -1.0, float("nan"), float("inf")])
+def test_plan_rejects_bad_price(price):
+    with pytest.raises(ValueError):
+        plan_position(900.0, price, BTC, 0.001)
+
+
+@pytest.mark.parametrize("notional", [0.0, -5.0, float("nan"), float("inf")])
+def test_plan_rejects_bad_notional(notional):
+    with pytest.raises(ValueError):
+        plan_position(notional, 60000.0, BTC, 0.001)

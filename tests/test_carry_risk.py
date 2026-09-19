@@ -28,3 +28,8 @@ def test_unit_divisor_for_percent_form():
 
 def test_tier_ordering():
     assert Tier.EMERGENCY > Tier.CLOSE > Tier.WARN > Tier.NORMAL
+
+
+def test_nan_ratio_is_treated_like_missing():
+    assert classify(float("nan"), True, C) == Tier.WARN
+    assert classify(float("nan"), False, C) == Tier.NORMAL

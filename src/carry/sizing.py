@@ -31,6 +31,10 @@ class Sizing:
 
 def plan_position(notional_usdt: float, price: float, inst: Instrument,
                   spot_taker_fee: float) -> Sizing:
+    if not (math.isfinite(price) and price > 0):
+        raise ValueError(f"price must be finite and > 0, got {price}")
+    if not (math.isfinite(notional_usdt) and notional_usdt > 0):
+        raise ValueError(f"notional must be finite and > 0, got {notional_usdt}")
     coins = notional_usdt / price
     contracts = floor_to(coins / inst.ct_val, inst.swap_lot)
     if contracts < inst.swap_min:

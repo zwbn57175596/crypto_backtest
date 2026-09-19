@@ -26,6 +26,12 @@ class CarryConfig:
     state_path: str = "live_state/carry_state.json"
 
     def __post_init__(self) -> None:
+        if not self.coins:
+            raise ValueError("coins must not be empty")
+        if self.window < 1:
+            raise ValueError("window must be >= 1")
+        if self.min_hold < 0:
+            raise ValueError("min_hold must be >= 0")
         if self.deploy_usdt <= 0:
             raise ValueError("deploy_usdt must be > 0")
         if not self.exit_apr < self.enter_apr:

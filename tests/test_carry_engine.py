@@ -290,3 +290,56 @@ def test_manual_ops_are_persisted():
     assert len(saved) == 2 and saved[-1].legs == {}
     eng.rearm()
     assert len(saved) == 3
+
+
+# --- final fix wave --------------------------------------------------------
+from carry.risk import Tier  # noqa: E402
+from carry.types import BTC  # noqa: E402
+
+
+def test_watchdog_error_does_not_skip_risk_close():
+    ex, eng, _ = make()
+    eng.step(0)
+    orig = ex.swap_contracts
+
+    def flaky(coin):
+        if coin == "ETH":
+            raise ConnectionError("eth down")
+        return orig(coin)
+
+    ex.swap_contracts = flaky
+    ex.mgn = 2.0                                       # CLOSE tier
+    eng.step(1000)
+    assert "BTC" not in eng.state.legs and ex.spot["BTC"] < 1e-5 and orig("BTC") == pytest.approx(0.0)
+    assert "ETH" in eng.state.legs                     # its close cannot complete
+    assert eng.state.mode == "HALTED"
+
+
+def test_rearm_resets_open_throttle_and_tier():
+    cfg = CarryConfig()
+    ex, eng, _ = make()
+    ex.fail_next("buy_spot", 200)
+    t = cfg.open_cooldown_ms
+    for now in (0, t, 2 * t + 1):
+        eng.step(now)
+    assert eng.state.mode == "HALTED" and eng.state.legs == {}
+    ex.fail_next("buy_spot", 0)
+    eng.rearm()
+    eng.step(2 * t + 2)                                # no cooldown wait
+    assert "BTC" in eng.state.legs and eng.state.mode == "HEDGED"
+
+
+def test_rearm_resets_last_tier():
+    ex, eng, _ = make(funding=dict(ZERO))
+    eng.force_open("BTC", 100.0, now_ms=0)
+    ex.mgn = 3.0
+    eng.step(1000)
+    assert eng._last_tier == Tier.WARN
+    eng.force_close("BTC")
+    eng.rearm()
+    assert eng._last_tier == Tier.NORMAL
+
+
+def test_engine_rejects_coin_missing_from_instruments():
+    with pytest.raises(ValueError):
+        Engine(FakeExchange(), {"BTC": BTC}, CarryConfig(), lambda m: None)

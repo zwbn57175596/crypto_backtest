@@ -59,3 +59,17 @@ def test_calls_are_logged():
     ex.buy_spot("BTC", 0.01)
     ex.sell_swap("BTC", 1.0)
     assert [(c[0], c[1]) for c in ex.calls] == [("buy_spot", "BTC"), ("sell_swap", "BTC")]
+
+
+def test_fault_injection_rejects_unknown_op():
+    ex = FakeExchange()
+    with pytest.raises(ValueError):
+        ex.fail_next("buy_swp")
+    with pytest.raises(ValueError):
+        ex.partial_next("nope", 0.5)
+
+
+def test_funding_history_zero_is_empty():
+    ex = FakeExchange(funding={"BTC": [0.1, 0.2, 0.3]})
+    assert ex.funding_history("BTC", 0) == []
+    assert ex.funding_history("BTC", 2) == [0.2, 0.3]
