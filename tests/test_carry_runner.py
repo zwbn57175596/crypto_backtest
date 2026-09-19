@@ -1,7 +1,14 @@
+import os
+
 import pytest
 
+from carry.bootstrap import exposure_report
 from carry.config import CarryConfig
+from carry.engine import Engine
+from carry.fake_exchange import FakeExchange
 from carry.runner import InstanceLock, Runner
+from carry.state import CarryState
+from carry.types import DEFAULT_INSTRUMENTS
 
 
 class Clock:
@@ -39,7 +46,7 @@ def stop_after(n):
 def make(engine, alerts, report=lambda: "REPORT", heartbeat=5.0):
     clock = Clock()
     return Runner(engine, report, alerts.append, CarryConfig(poll_sec=2.0), heartbeat_sec=heartbeat,
-                  clock=clock.now, sleep=clock.sleep), clock
+                  clock=clock.now, mono=clock.now, sleep=clock.sleep), clock
 
 
 def test_steps_once_per_poll_and_advances_time():
@@ -97,3 +104,53 @@ def test_instance_lock_context_manager(tmp_path):
             InstanceLock(p).acquire()
     with InstanceLock(p):
         pass
+
+
+def test_raising_alert_does_not_stop_the_loop_on_step_error_and_heartbeat():
+    def bad_alert(msg):
+        raise ConnectionError("telegram down")
+
+    eng = FakeEngine([RuntimeError("boom"), ["opened BTC"], []])
+    clock = Clock()
+    Runner(eng, lambda: "REPORT", bad_alert, CarryConfig(poll_sec=2.0), heartbeat_sec=1.0,
+           clock=clock.now, mono=clock.now, sleep=clock.sleep).run(stop_after(3))
+    assert len(eng.calls) == 3
+
+
+def test_heartbeat_pacing_uses_monotonic_not_wall_clock():
+    wall = {"t": 1_000_000.0}
+    mono = {"t": 0.0}
+
+    def sleep(s):
+        mono["t"] += s
+        wall["t"] -= 3600.0          # wall clock keeps jumping backward (NTP step / DST-like)
+
+    alerts = []
+    eng = FakeEngine()
+    Runner(eng, lambda: "REPORT", alerts.append, CarryConfig(poll_sec=2.0), heartbeat_sec=5.0,
+           clock=lambda: wall["t"], mono=lambda: mono["t"], sleep=sleep).run(stop_after(5))
+    assert sum(a.startswith("[HEARTBEAT]") for a in alerts) == 2     # mono 0 and 6
+    assert eng.calls[1] < eng.calls[0]                               # engine still gets wall-clock ms
+
+
+def test_real_halted_engine_still_heartbeats():
+    ex, alerts = FakeExchange(), []
+    cfg = CarryConfig(poll_sec=2.0)
+    eng = Engine(ex, DEFAULT_INSTRUMENTS, cfg, alerts.append, state=CarryState(mode="HALTED", halted_reason="x"))
+    clock = Clock()
+    Runner(eng, lambda: exposure_report(ex, DEFAULT_INSTRUMENTS, cfg, eng.state), alerts.append, cfg,
+           heartbeat_sec=5.0, clock=clock.now, mono=clock.now, sleep=clock.sleep).run(stop_after(4))
+    hb = [a for a in alerts if a.startswith("[HEARTBEAT]")]
+    assert len(hb) == 2 and "mode=HALTED" in hb[0]
+    assert eng.state.mode == "HALTED"
+
+
+def test_lock_file_contains_pid(tmp_path):
+    p = tmp_path / "carry.lock"
+    a = InstanceLock(p)
+    a.acquire()
+    assert p.read_text() == str(os.getpid())
+    with pytest.raises(RuntimeError):
+        InstanceLock(p).acquire()
+    assert p.read_text() == str(os.getpid())          # the loser must not wipe the holder's PID
+    a.release()
