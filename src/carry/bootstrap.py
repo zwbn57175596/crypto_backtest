@@ -90,7 +90,9 @@ def reconcile(ex: Exchange, insts: dict[str, Instrument], cfg: CarryConfig, stat
                 why = f"; price unavailable ({type(e).__name__})"
             else:
                 if notional <= 1.2 * cfg.max_order_notional:
-                    state.legs[coin] = CoinLeg(contracts=contracts, spot_qty=spot, entry_ts=now_ms)
+                    # back-dated by min_hold so a restart does not restart the fade-exit clock
+                    entry_ts = now_ms - cfg.min_hold * 8 * 3600 * 1000
+                    state.legs[coin] = CoinLeg(contracts=contracts, spot_qty=spot, entry_ts=entry_ts)
                     state.mode = "HEDGED"
                     note = f"adopted existing {coin} hedge: {contracts} contracts, spot {spot}"
                     notes.append(note)

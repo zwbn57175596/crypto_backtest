@@ -58,6 +58,8 @@ def load_config(path: str | Path) -> CarryConfig:
     if "state_path" in data and not os.path.isabs(str(data["state_path"])):
         raise ValueError("state_path must be an absolute path (a relative path would move the state and lock "
                          f"with the working directory), got {data['state_path']!r}")
+    data.setdefault("settle_sec", 1.0)            # live-safe defaults live at the config-FILE layer
+    data.setdefault("mgn_calibrated", False)
     if "coins" in data:
         data["coins"] = tuple(data["coins"])
     return CarryConfig(**data)
@@ -228,6 +230,8 @@ def _locked_command(args: argparse.Namespace, clients: Clients, cfg: CarryConfig
             out("rearmed")
             return 0
         if args.cmd == "force-open":
+            if not cfg.mgn_calibrated:
+                out("WARNING: mgn not calibrated (mgn_calibrated=false); the margin-ratio scale is unverified")
             ok = eng.force_open(args.coin, args.notional, int(clock() * 1000))
             out(f"force-open {args.coin}: {'ok' if ok else 'FAILED'}")
             return 0 if ok else 1
@@ -235,7 +239,8 @@ def _locked_command(args: argparse.Namespace, clients: Clients, cfg: CarryConfig
             return _force_close(eng, args.coin, clients, cfg, out)
         stop = _StopFlag(args.max_steps)                       # cmd == "run"
         _safe_alert(alerter, f"[INFO] carry starting (okx mode: {clients.mode}, coins={list(cfg.coins)}, "
-                             f"state={eng.state.mode}, poll_sec={cfg.poll_sec})")
+                             f"state={eng.state.mode}, poll_sec={cfg.poll_sec}, "
+                             f"mgn_calibrated={cfg.mgn_calibrated})")
         old = {s: signal.signal(s, lambda *_: stop.trigger()) for s in (signal.SIGTERM, signal.SIGINT)}
         try:
             Runner(eng, lambda: f"okx={clients.mode} "

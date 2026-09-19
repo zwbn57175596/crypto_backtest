@@ -15,11 +15,15 @@ from carry.config import CarryConfig
 from carry.exchange import Exchange
 from carry.sizing import Sizing, drift, floor_to, plan_position
 from carry.state import CoinLeg
-from carry.types import Instrument
+from carry.types import Instrument, OrderResult
 
 
 class HedgeError(RuntimeError):
     """Raised when a rollback fails and an unhedged leg may remain open."""
+
+
+class PreTradeError(RuntimeError):
+    """A read needed before the first order failed; no order has been placed, so this is safe to retry."""
 
 
 @dataclass(frozen=True)
@@ -47,9 +51,16 @@ class Executor:
         if not (0 < notional <= self.cfg.max_order_notional):
             raise ValueError(f"notional {notional} must be in (0, {self.cfg.max_order_notional}]")
         inst = self.insts[coin]
-        sz = plan_position(notional, self.ex.price(coin), inst, self.cfg.spot_taker_fee)
-        before_perp = self.ex.swap_contracts(coin)      # baselines: no exposure exists yet, may raise raw
-        before_spot = self.ex.spot_balance(coin)
+        try:
+            price = self.ex.price(coin)
+        except Exception as e:  # noqa: BLE001 - no order placed yet
+            raise PreTradeError(f"{coin}: pre-trade read failed ({type(e).__name__})") from e
+        sz = plan_position(notional, price, inst, self.cfg.spot_taker_fee)
+        try:
+            before_perp = self.ex.swap_contracts(coin)  # baselines: no exposure exists yet
+            before_spot = self.ex.spot_balance(coin)
+        except Exception as e:  # noqa: BLE001 - no order placed yet
+            raise PreTradeError(f"{coin}: pre-trade read failed ({type(e).__name__})") from e
 
         try:
             return self._open_legs(coin, inst, sz, before_perp, before_spot, now_ms)
@@ -62,12 +73,20 @@ class Executor:
 
     def _open_legs(self, coin: str, inst: Instrument, sz: Sizing, before_perp: float,
                    before_spot: float, now_ms: int) -> CoinLeg | None:
+        res: OrderResult | None = None
         try:                                                   # perp first: worst case is an extra short
-            self.ex.sell_swap(coin, sz.contracts)
+            res = self.ex.sell_swap(coin, sz.contracts)
         except Exception as e:  # noqa: BLE001
             self._alert(f"open {coin}: perp order error: {e!r}")
         self._settle()
         held = self.ex.swap_contracts(coin) - before_perp
+        if held < inst.swap_min and self._reported_fill(res):
+            self._settle()                                     # the position read may lag the order result
+            held = self.ex.swap_contracts(coin) - before_perp
+            if held < inst.swap_min:
+                self._alert(f"[CRITICAL] open {coin}: perp order reported {self._describe(res)} "
+                            "but no position is visible \u2014 verify manually")
+                return None
         if held < inst.swap_min:
             self._alert(f"open {coin}: perp order not filled")
             return None
@@ -76,12 +95,19 @@ class Executor:
             self._undo_short(coin, held)
             return None
 
+        sres: OrderResult | None = None
         try:
-            self.ex.buy_spot(coin, sz.spot_qty)
+            sres = self.ex.buy_spot(coin, sz.spot_qty)
         except Exception as e:  # noqa: BLE001
             self._alert(f"open {coin}: spot order error: {e!r}")
         self._settle()
         bought = self.ex.spot_balance(coin) - before_spot
+        if bought < inst.spot_min and self._reported_fill(sres):
+            self._settle()
+            bought = self.ex.spot_balance(coin) - before_spot
+            if bought < inst.spot_min:
+                self._alert(f"[CRITICAL] open {coin}: spot order reported {self._describe(sres)} "
+                            "but no balance increase is visible \u2014 verify manually")
         if bought >= inst.spot_min and abs(drift(bought, held, inst)) <= self.cfg.drift_tol:
             return CoinLeg(contracts=held, spot_qty=bought, entry_ts=now_ms)
 
@@ -107,6 +133,19 @@ class Executor:
             return CloseResult(False, False)
 
     # --- helpers ---------------------------------------------------------
+    @staticmethod
+    def _reported_fill(res: OrderResult | None) -> bool:
+        """The order result claims the order went through (or may have): a missing position is suspicious."""
+        return res is not None and (res.ok or res.filled > 0 or res.error.startswith("UNCONFIRMED"))
+
+    @staticmethod
+    def _describe(res: OrderResult | None) -> str:
+        if res is None:
+            return "nothing"
+        if res.ok:
+            return f"ok (filled {res.filled})"
+        return f"filled {res.filled}, error {res.error!r}" if res.filled > 0 else f"error {res.error!r}"
+
     def _alert(self, msg: str) -> None:
         """Alert without ever raising: a broken alerter must not skip a rollback step."""
         try:
@@ -128,9 +167,12 @@ class Executor:
             if excess < minimum:
                 return True
             try:
-                order(excess)                 # result ignored; the next read() decides
+                res = order(excess)           # success is judged by the next read(); the result is for visibility
             except Exception as e:            # noqa: BLE001 - exchange errors count as a failed attempt
                 self._alert(f"order error: {e!r}")
+            else:
+                if isinstance(res, OrderResult) and not res.ok and res.filled <= 0:
+                    self._alert(f"order rejected: {res.error}")
             self._settle()
         return floor_to(read() - target, lot) < minimum
 

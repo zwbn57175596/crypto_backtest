@@ -6,7 +6,7 @@ from typing import Callable
 from carry.config import CarryConfig
 from carry.decision import decide
 from carry.exchange import Exchange
-from carry.executor import Executor, HedgeError
+from carry.executor import Executor, HedgeError, PreTradeError
 from carry.hedge import HedgeStatus, check_hedge
 from carry.risk import Tier, classify
 from carry.state import CarryState, CoinLeg
@@ -14,6 +14,7 @@ from carry.types import Instrument
 from carry.watchdog import Watchdog, WatchdogError
 
 SETTLEMENT_MS = 8 * 3600 * 1000
+PRE_TRADE_COOLDOWN_MS = 60_000
 
 
 class Engine:
@@ -31,6 +32,8 @@ class Engine:
         self._last_tier = Tier.NORMAL
         self._open_block_until: dict[str, int] = {}
         self._open_fails: dict[str, int] = {}
+        self._warned_uncalibrated = False
+        self._warned_pct = False
 
     # --- public ----------------------------------------------------------
     def step(self, now_ms: int) -> list[str]:
@@ -59,6 +62,9 @@ class Engine:
                 raise RuntimeError(f"risk tier is {tier.name}; refusing to open")
             try:
                 return self._open(coin, notional, now_ms) is not None
+            except PreTradeError as e:
+                self._skip_open(coin, e, now_ms)
+                return False
             except HedgeError as e:
                 self._halt(str(e))
                 return False
@@ -121,7 +127,28 @@ class Engine:
         self._alert(f"[CRITICAL] HALTED: {reason}")
 
     def _tier(self) -> Tier:
-        return classify(self.ex.mgn_ratio(), bool(self.state.legs), self.cfg)
+        m = self.ex.mgn_ratio()
+        if m is not None and m == m and m / self.cfg.mgn_unit > 50 and not self._warned_pct:
+            self._warned_pct = True
+            self._alert(f"[WARNING] margin ratio {m} looks like a percentage; check mgn_unit")
+        return classify(m, bool(self.state.legs), self.cfg)
+
+    def _skip_open(self, coin: str, err: Exception, now_ms: int) -> None:
+        self._alert(f"[WARNING] {err}; skipping this poll")
+        self._open_block_until[coin] = now_ms + PRE_TRADE_COOLDOWN_MS
+
+    def _warn_holdings_while_halted(self) -> None:
+        """While HALTED only alert about holdings with no recorded leg; never change state, never raise."""
+        for coin in self.cfg.coins:
+            if coin in self.state.legs:
+                continue
+            try:
+                st = check_hedge(self.ex.spot_balance(coin), self.ex.swap_contracts(coin),
+                                 self.insts[coin], self.cfg.drift_tol)
+            except Exception:  # noqa: BLE001
+                continue
+            if st != HedgeStatus.FLAT:
+                self._alert(f"[CRITICAL] HALTED: unexpected {coin} holdings ({st.value}) with no recorded position")
 
     def _open(self, coin: str, notional: float, now_ms: int) -> CoinLeg | None:
         leg = self.executor.open(coin, notional, now_ms)
@@ -145,6 +172,8 @@ class Engine:
                 if st != HedgeStatus.FLAT:
                     self._halt(f"unexpected {coin} holdings ({st.value}) with no recorded position; not trading")
                     return ["HALT unexpected holdings"]
+        else:
+            self._warn_holdings_while_halted()
 
         wd_err: WatchdogError | None = None
         try:
@@ -172,14 +201,26 @@ class Engine:
         if wd_err is not None or s.mode == "HALTED":
             return out
 
+        if not self.cfg.mgn_calibrated and not self._warned_uncalibrated:
+            self._warned_uncalibrated = True
+            self._alert("[WARNING] mgn_unit/thresholds not calibrated: signal-driven opens are disabled "
+                        "(see runbook demo step 2)")
         for coin in self.cfg.coins:
             leg = s.legs.get(coin)
             held = max(0, int((now_ms - leg.entry_ts) / SETTLEMENT_MS)) if leg else 0
             action = decide(self.ex.funding_history(coin, self.cfg.window), leg is not None, held, self.cfg)
             if action == "open" and tier == Tier.NORMAL:
+                if not self.cfg.mgn_calibrated:
+                    continue                                   # watchdog/risk/closes keep running; only opens stop
                 if now_ms < self._open_block_until.get(coin, 0):
                     continue
-                if self._open(coin, self.cfg.per_coin_notional, now_ms) is not None:
+                try:
+                    leg_opened = self._open(coin, self.cfg.per_coin_notional, now_ms)
+                except PreTradeError as e:                     # no order was placed: skip, do not count, do not halt
+                    self._skip_open(coin, e, now_ms)
+                    out.append(f"open {coin} skipped")
+                    continue
+                if leg_opened is not None:
                     out.append(f"opened {coin}")
                     continue
                 n = self._open_fails.get(coin, 0) + 1

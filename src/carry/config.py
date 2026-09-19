@@ -20,6 +20,7 @@ class CarryConfig:
     mgn_close: float = 2.5
     mgn_emergency: float = 1.5
     mgn_unit: float = 1.0               # divide the raw API value by this to get ratio form
+    mgn_calibrated: bool = True         # False: signal-driven opens are disabled until the scale is calibrated on demo
     adl_alert_rank: int = 4
     poll_sec: float = 2.0
     open_cooldown_ms: int = 1_800_000   # wait after a failed open before retrying that coin
@@ -40,6 +41,8 @@ class CarryConfig:
             raise ValueError("exit_apr must be below enter_apr")
         if not self.mgn_emergency < self.mgn_close < self.mgn_warn:
             raise ValueError("need mgn_emergency < mgn_close < mgn_warn")
+        if not isinstance(self.mgn_calibrated, bool):
+            raise ValueError("mgn_calibrated must be a bool")
         if self.mgn_unit <= 0:
             raise ValueError("mgn_unit must be > 0")
         if self.open_cooldown_ms < 0:

@@ -9,6 +9,7 @@
   "poll_sec": 2.0,
   "settle_sec": 1.0,
   "mgn_unit": 1.0,
+  "mgn_calibrated": false,
   "mgn_warn": 4.0,
   "mgn_close": 2.5,
   "mgn_emergency": 1.5,

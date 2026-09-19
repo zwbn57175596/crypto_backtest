@@ -24,11 +24,14 @@ Every command prints `okx mode: DEMO` or `okx mode: LIVE` as its FIRST output li
 ## Demo cycle (do this BEFORE live money; needs a demo-trading API key, set `OKX_DEMO=1`)
 0. Confirm the first output line says `okx mode: DEMO` (never run `force-open` before that).
 1. `preflight`, then `force-open BTC 100`: check `status` shows a hedge (`hedge=OK`), spot and perp quantities match.
-2. Record `mgnRatio` from `status` with the position open. It sets the units and thresholds: if the value is a percentage (e.g. 350) set `mgn_unit` to 100 in the config; calibrate `mgn_warn` / `mgn_close` / `mgn_emergency` from the observed value and a price-shock estimate. Do not run live until this is done.
+2. Record `mgnRatio` from `status` with the position open. It sets the units and thresholds: if the value is a percentage (e.g. 350) set `mgn_unit` to 100 in the config; calibrate `mgn_warn` / `mgn_close` / `mgn_emergency` from the observed value and a price-shock estimate. Then set `"mgn_calibrated": true` in the config (see step 7). Do not run live until this is done.
 3. Check spot orders work with `OKX_SPOT_TD_MODE` (`cash` by default because the spot leg is unlevered; try `cross` only if `cash` orders are rejected) and that spot buys deduct the fee in kind (the hedge stays within `drift_tol`).
-4. Simulate ADL by closing the perp leg by hand: within a few polls the bot must sell the spot, alert CRITICAL, and go HALTED. Then `force-close`, `rearm`. (If the bot has no record of a leg, `force-close` refuses to trade what is on the exchange: close it in the OKX UI, then run `rearm`.)
-5. Restart mid-position: the bot must adopt the healthy hedge or halt and alert (see `[CRITICAL] startup`).
+4. Simulate ADL by closing the perp leg by hand: within a few polls the bot must sell the spot, alert CRITICAL, and go HALTED. After the watchdog flattens there is no recorded leg, so run `rearm` (use `force-close` only if a leg is still recorded). If the bot has no record of a leg, `force-close` refuses to trade what is on the exchange: close it in the OKX UI, then run `rearm`.
+5. Restart the service WITH THE HEDGE OPEN: the bot must adopt the healthy hedge or halt and alert (see `[CRITICAL] startup`).
 6. Kill the network briefly: expect a halt with alerts, no unhedged exposure.
+7. Calibration: after setting `mgn_unit` / `mgn_warn` / `mgn_close` / `mgn_emergency` and `"mgn_calibrated": true`, re-run and confirm the heartbeat shows a NORMAL risk tier with the position open. The example config ships `mgn_calibrated: false` and the config loader defaults it to false: signal-driven opens stay DISABLED (one `[WARNING] mgn_unit/thresholds not calibrated` alert) until you set it true. `force-open` still works (the demo needs it to measure the scale) and prints a warning. If the reported margin ratio looks like a percentage (ratio/`mgn_unit` > 50) the engine also alerts once.
+8. Pending-order drill: place a far-from-market limit order by hand with a `clOrdId` starting `carrytest`, run `preflight` (must print `PROBLEM: pending carry order still live...`), start `run` (must alert `adopted pending carry order(s)` and block that instrument), then cancel the order and confirm the `[INFO] ... resolved` alert.
+9. Settle delay: after `force-open` check whether the first open ever reports "perp order not filled" while OKX shows a position. If so, raise `settle_sec` (the config loader defaults it to 1.0 s when the key is omitted; the executor also re-reads once when an order reports a fill but no position is visible yet, and raises a CRITICAL alert if it still is not).
 
 ## API assumptions the demo run must confirm (from the adapter review; record each result in the demo findings doc)
 1. `clOrdId` uniqueness: re-POST a filled order's clOrdId — rejected (which code) or accepted as a new order? Confirms `DUPLICATE_CLORDID_CODES`.
@@ -41,15 +44,26 @@ Every command prints `okx mode: DEMO` or `okx mode: LIVE` as its FIRST output li
 8. Funding history: does it include the unsettled period? `fundingRate` vs `realizedRate` — which was actually paid?
 9. `TRANSIENT_CODES` (50001/50004/50011/50013/50026) and that rate limiting surfaces as 50011, not an HTTP error with a non-JSON body.
 10. USDT availability: preflight reads `availBal` (falling back to `cashBal`) for the 1.2x deploy check; confirm on demo whether `availBal` or `availEq` is the right field for a multi-currency-margin account with an open perp.
-11. Account settings: swap leverage for the instruments, position mode net, `autoLoan` off; API clients are built with `debug=False` (never log signed headers).
+11. Account settings: swap leverage for the instruments, position mode net, `autoLoan` off; API clients are built with `debug=False` (never log signed headers). Set cross leverage to 5x for both swaps in the OKX UI; `preflight` prints the value it reads (`swap leverage BTC-USDT-SWAP = 5x`) and fails below 2x.
+12. Funding cache: if `funding_rate_history` includes the unsettled period (item 8), the adapter's funding-cache expiry must be adjusted BEFORE going live.
 
 ## Between demo and live
 Stop the service and delete/rename `live_state/carry_state.json` (and the `.lock` file if present) so demo state never carries into live. Switch the credentials in `carry.env` (empty `OKX_DEMO`) and re-run `preflight`.
 
 ## Live (small)
-1. Stop other users of the account, run `preflight`, `alert-test`, and confirm the first output line says `okx mode: LIVE`.
-2. `force-open BTC 100` then `force-close BTC` once with real money as a smoke test (cost about 0.3%).
+0. **PREREQUISITE — external dead-man's switch**: before installing the unit, set up a check outside this server that alerts when the heartbeat message (hourly) is ABSENT for more than about 2 hours (Healthchecks-style ping, or a monitor on the Telegram chat/`carry.log`). A hung exchange call stalls the watchdog and the heartbeat together; only an external check notices.
+1. Stop other users of the account, run `preflight`, `alert-test`, and confirm the first output line says `okx mode: LIVE`. Make sure `mgn_calibrated` is `true` only if you completed demo step 7.
+2. `force-open BTC 100` then `force-close BTC` once with real money as a smoke test (cost about 0.3%). Then run `status` and confirm FLAT with no holdings before installing the unit.
 3. Install the unit: `sudo cp deploy/carry.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now carry`. Watch `journalctl -u carry -f`, the log file and Telegram; the heartbeat arrives hourly.
+
+## Kill switch / panic
+1. `sudo systemctl stop carry`
+2. `force-close BTC`, then `force-close ETH`
+3. `status`: confirm flat
+4. If anything remains, close it by hand in the OKX UI
+5. `rearm`
+
+There is NO automatic max-loss stop and NO position cap beyond `deploy_usdt` / `max_order_notional`: watching the account is the operator's job. A close that reports BLOCKED means an unconfirmed order on that instrument: verify by hand in the OKX UI, then `rearm`.
 
 ## Operations
 - Manual commands need the lock: `sudo systemctl stop carry`, then `force-open|force-close|rearm`, then `sudo systemctl start carry`. `systemctl stop` waits for the current poll to finish (normally under 5 s, up to about 2 minutes if an order is not confirming; the unit allows 300 s). After stopping, run `status` and confirm the exposure is flat or a healthy HEDGED position before doing anything else. `status` works without the lock and never changes the state file.

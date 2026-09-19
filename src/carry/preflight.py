@@ -61,6 +61,8 @@ def preflight(account: Any, public: Any, cfg: CarryConfig, insts: dict[str, Inst
                 r.warnings.append(f"other balance: {cash} {ccy}")
         if usdt < 1.2 * cfg.deploy_usdt:
             r.problems.append(f"USDT available {usdt} < 1.2 x deploy_usdt ({cfg.deploy_usdt})")
+        elif usdt < 1.6 * cfg.deploy_usdt:
+            r.warnings.append(f"thin margin buffer: USDT available {usdt} < 1.6 x deploy_usdt ({cfg.deploy_usdt})")
 
     def check_positions() -> None:
         for p in _rows(account.get_positions(instType="SWAP"), "positions"):
@@ -80,8 +82,20 @@ def preflight(account: Any, public: Any, cfg: CarryConfig, insts: dict[str, Inst
                     if not math.isclose(_num(row.get(key)), expected, rel_tol=1e-9):
                         r.problems.append(f"{inst_id} {key} is {row.get(key)}, expected {expected}")
 
+    def check_leverage(inst: Instrument) -> None:
+        rows = _rows(account.get_leverage(mgnMode="cross", instId=inst.swap_id), "leverage")
+        lever = _num(rows[0].get("lever"))
+        if lever < 2:
+            r.problems.append(f"swap leverage {inst.swap_id} is {lever:g}x, below 2x")
+        else:
+            r.warnings.append(f"swap leverage {inst.swap_id} = {lever:g}x")
+
+    if not cfg.mgn_calibrated:
+        r.warnings.append("mgn_unit/thresholds not calibrated (mgn_calibrated=false): signal-driven opens are disabled")
     guarded("account config", check_config)
     guarded("balances", check_balances)
     guarded("positions", check_positions)
     guarded("instrument specs", check_specs)
+    for coin in cfg.coins:
+        guarded(f"swap leverage {insts[coin].swap_id}", lambda i=insts[coin]: check_leverage(i))
     return r

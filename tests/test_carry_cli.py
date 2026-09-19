@@ -12,7 +12,7 @@ HIGH = {"BTC": [0.0001] * 9, "ETH": [0.0001] * 9}
 
 
 def setup(tmp_path, funding=None, **cfg_over):
-    cfg = {"state_path": str(tmp_path / "state.json"), **cfg_over}
+    cfg = {"state_path": str(tmp_path / "state.json"), "settle_sec": 0.0, "mgn_calibrated": True, **cfg_over}
     cfg_path = tmp_path / "carry.json"
     cfg_path.write_text(json.dumps(cfg))
     ex = FakeExchange(funding=dict(funding or {}))
@@ -463,7 +463,7 @@ def test_force_close_closes_a_recorded_leg_even_if_coin_was_removed_from_config(
     assert main(argv + ["force-open", "BTC", "100"], env={}, **kw) == 0
     assert "BTC" in load_state(tmp_path / "state.json").legs
     eth_only = tmp_path / "eth.json"
-    eth_only.write_text(json.dumps({"state_path": str(tmp_path / "state.json"), "coins": ["ETH"]}))
+    eth_only.write_text(json.dumps({"state_path": str(tmp_path / "state.json"), "coins": ["ETH"], "settle_sec": 0.0}))
     assert main(["--config", str(eth_only), "force-close", "BTC"], env={}, **kw) == 0
     assert load_state(tmp_path / "state.json").legs == {}
     from carry.hedge import HedgeStatus, check_hedge
@@ -484,6 +484,30 @@ def test_force_close_recorded_leg_without_instrument_definition_is_a_problem_not
 def test_force_close_unrecorded_coin_not_in_config_is_still_unknown(tmp_path):
     ex, alerts, out, kw, argv = setup(tmp_path)
     eth_only = tmp_path / "eth.json"
-    eth_only.write_text(json.dumps({"state_path": str(tmp_path / "state.json"), "coins": ["ETH"]}))
+    eth_only.write_text(json.dumps({"state_path": str(tmp_path / "state.json"), "coins": ["ETH"], "settle_sec": 0.0}))
     assert main(["--config", str(eth_only), "force-close", "BTC"], env={}, **kw) == 1
     assert any(line.startswith("error: unknown coin") for line in out)
+
+
+# --- final fix wave: config-file layer live-safe defaults ---------------------------
+def test_load_config_file_defaults_are_live_safe(tmp_path):
+    p = tmp_path / "c.json"
+    p.write_text("{}")
+    c = load_config(p)
+    assert c.mgn_calibrated is False and c.settle_sec == 1.0
+    p.write_text(json.dumps({"mgn_calibrated": True, "settle_sec": 0.5}))
+    c = load_config(p)
+    assert c.mgn_calibrated is True and c.settle_sec == 0.5
+
+
+def test_uncalibrated_config_run_alert_preflight_warning_and_force_open_warning(tmp_path):
+    ex, alerts, out, kw, argv = setup(tmp_path, mgn_calibrated=False, funding=HIGH)
+    assert main(argv + ["preflight"], env={}, **kw) == 0
+    assert any(line.startswith("warning:") and "not calibrated" in line for line in out)
+    out.clear()
+    assert main(argv + ["force-open", "BTC", "100"], env={}, **kw) == 0          # force-open is NOT blocked
+    assert out[1].startswith("WARNING: mgn not calibrated") and "BTC" in load_state(tmp_path / "state.json").legs
+    assert main(argv + ["force-close", "BTC"], env={}, **kw) == 0
+    assert main(argv + ["run", "--max-steps", "2"], env={}, **kw) == 0
+    assert any("mgn_calibrated=False" in a and a.startswith("[INFO] carry starting") for a in alerts)
+    assert load_state(tmp_path / "state.json").legs == {}                          # signal opens stayed disabled

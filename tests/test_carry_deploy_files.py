@@ -56,7 +56,8 @@ def test_env_example_has_no_export_lines():
 def test_runbook_covers_fix_round_1_operator_notes():
     text = (ROOT / "deploy" / "README-carry.md").read_text()
     for needle in ("okx mode", "DEMO", "LIVE", "cd /home/ubuntu/crypto_backtest", "availEq", "EnvironmentFile",
-                   "1.2", "leverage", "OKX UI", "delete/rename", "coins", "calibrated"):
+                   "1.2", "leverage", "OKX UI", "delete/rename", "coins", "calibrated",
+                   "mgn_calibrated", "Kill switch", "carrytest", "settle_sec", "dead-man", "5x"):
         assert needle in text
 
 
@@ -65,3 +66,14 @@ def test_gitignore_covers_carry_runtime_files_but_not_the_whole_directory():
     for pat in ("live_state/carry_state.json*", "live_state/carry.log*", "live_state/*.lock", "live_state/*.corrupt-*"):
         assert pat in lines
     assert "live_state/" not in lines and "live_state" not in lines
+
+
+def test_example_config_ships_uncalibrated_with_live_settle_delay():
+    c = load_config(ROOT / "config" / "carry.example.json")
+    assert c.mgn_calibrated is False and c.settle_sec == 1.0
+
+
+def test_runbook_makes_the_dead_mans_switch_a_live_prerequisite():
+    text = (ROOT / "deploy" / "README-carry.md").read_text()
+    live = text.split("## Live (small)")[1].split("## Kill switch")[0]
+    assert "PREREQUISITE" in live and "dead-man" in live

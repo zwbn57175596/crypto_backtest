@@ -343,3 +343,105 @@ def test_rearm_resets_last_tier():
 def test_engine_rejects_coin_missing_from_instruments():
     with pytest.raises(ValueError):
         Engine(FakeExchange(), {"BTC": BTC}, CarryConfig(), lambda m: None)
+
+
+# --- final fix wave ------------------------------------------------------------------
+from carry.executor import PreTradeError  # noqa: E402
+
+
+def make_cfg(cfg, funding=HIGH):
+    ex = FakeExchange(funding=dict(funding))
+    alerts: list[str] = []
+    return ex, Engine(ex, DEFAULT_INSTRUMENTS, cfg, alerts.append), alerts
+
+
+def test_uncalibrated_engine_opens_nothing_but_alerts_once():
+    ex, eng, alerts = make_cfg(CarryConfig(mgn_calibrated=False))
+    for i in range(3):
+        eng.step(i * 1000)
+    assert eng.state.legs == {} and sent_orders(ex) == []
+    warns = [a for a in alerts if "not calibrated" in a]
+    assert len(warns) == 1 and warns[0].startswith("[WARNING]")
+
+
+def test_uncalibrated_engine_still_runs_watchdog_risk_and_force_open():
+    ex, eng, alerts = make_cfg(CarryConfig(mgn_calibrated=False))
+    assert eng.force_open("BTC", 100.0, 0) is True and "BTC" in eng.state.legs      # force_open not blocked
+    ex.trigger_adl("BTC", 1.0)
+    eng.step(1000)                                                                   # watchdog still flattens
+    assert "BTC" not in eng.state.legs and ex.spot["BTC"] == pytest.approx(0.0, abs=1e-7)
+    ex2, eng2, _ = make_cfg(CarryConfig(mgn_calibrated=False))
+    eng2.force_open("BTC", 100.0, 0)
+    ex2.mgn = 2.0                                                                    # CLOSE tier still closes
+    eng2.step(1000)
+    assert eng2.state.legs == {} and eng2.state.mode == "HALTED"
+
+
+def test_percentage_looking_margin_ratio_alerts_once_but_still_classifies():
+    ex, eng, alerts = make_cfg(CarryConfig())
+    ex.mgn = 350.0
+    for i in range(3):
+        eng.step(i * 1000)
+    assert len([a for a in alerts if "looks like a percentage" in a]) == 1
+    assert set(eng.state.legs) == {"BTC", "ETH"}                                     # NORMAL tier, opened as usual
+
+
+class PriceDown(FakeExchange):
+    down = True
+
+    def price(self, coin):
+        if self.down:
+            raise ConnectionError("price feed down")
+        return super().price(coin)
+
+
+def test_pre_trade_read_failure_skips_with_short_cooldown_and_never_halts():
+    ex = PriceDown(funding=dict(HIGH))
+    alerts: list[str] = []
+    cfg = CarryConfig(max_open_fails=1)
+    eng = Engine(ex, DEFAULT_INSTRUMENTS, cfg, alerts.append)
+    eng.step(0)
+    assert eng.state.mode == "FLAT" and eng.state.legs == {} and sent_orders(ex) == []
+    assert any(a.startswith("[WARNING]") and "pre-trade read failed (ConnectionError)" in a and "skipping" in a
+               for a in alerts)
+    assert eng._open_fails == {}                                                     # not counted
+    n = len(alerts)
+    eng.step(30_000)                                                                 # inside 60 s: no retry
+    assert len(alerts) == n
+    ex.down = False
+    eng.step(61_000)                                                                 # after 60 s: retried and opens
+    assert set(eng.state.legs) == {"BTC", "ETH"}
+
+
+def test_force_open_pre_trade_failure_returns_false_without_halting():
+    ex = PriceDown(funding=dict(HIGH))
+    eng = Engine(ex, DEFAULT_INSTRUMENTS, CarryConfig(), [].append)
+    assert eng.force_open("BTC", 100.0, 0) is False
+    assert eng.state.mode == "FLAT" and sent_orders(ex) == []
+
+
+def test_hedge_error_after_first_order_still_halts():
+    ex, eng, alerts = make()
+    ex.partial_next("sell_swap", 0.5)
+    ex.fail_next("buy_swap", 3)                                                      # undo of the partial short fails
+    eng.step(0)
+    assert eng.state.mode == "HALTED"
+
+
+def test_halted_engine_alerts_on_unrecorded_holdings_without_acting():
+    ex, eng, alerts = make(funding=ZERO)
+    eng.state.mode = "HALTED"
+    ex.spot["BTC"] = 0.01
+    eng.step(0)
+    assert eng.state.mode == "HALTED" and sent_orders(ex) == []
+    assert any(a.startswith("[CRITICAL] HALTED: unexpected BTC holdings (SPOT_ONLY)") for a in alerts)
+
+
+def test_halted_engine_survives_failing_holdings_reads():
+    ex, eng, alerts = make(funding=ZERO)
+    eng.state.mode = "HALTED"
+
+    def boom(coin):
+        raise ConnectionError("down")
+    ex.spot_balance = boom
+    assert eng.step(0) is not None and eng.state.mode == "HALTED"

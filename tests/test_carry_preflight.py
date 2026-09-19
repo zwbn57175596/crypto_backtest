@@ -16,6 +16,7 @@ class FakeAccount:
         self.acct_lv, self.auto_loan, self.pos_mode = acct_lv, auto_loan, pos_mode
         self.details = details if details is not None else [{"ccy": "USDT", "cashBal": "1000", "availBal": "1000"}]
         self.positions, self.fail = positions or [], False
+        self.leverage, self.leverage_fail = "5", False
 
     def get_account_config(self):
         if self.fail:
@@ -24,6 +25,11 @@ class FakeAccount:
 
     def get_account_balance(self, ccy=""):
         return ok([{"details": self.details, "mgnRatio": ""}])
+
+    def get_leverage(self, mgnMode, ccy="", instId=""):
+        if self.leverage_fail:
+            raise ConnectionError("down")
+        return ok([{"instId": instId, "mgnMode": mgnMode, "lever": self.leverage}])
 
     def get_positions(self, instType="", instId="", posId=""):
         return ok(self.positions)
@@ -89,3 +95,37 @@ def test_read_failure_is_reported_not_raised():
     acc.fail = True
     r = preflight(acc, FakePublic(), CFG, DEFAULT_INSTRUMENTS)
     assert any("could not read" in p and "ConnectionError" in p for p in r.problems)
+
+
+# --- final fix wave: leverage, buffer, calibration ----------------------------------
+def test_swap_leverage_is_reported_as_a_warning_per_swap():
+    r = run()
+    assert r.ok
+    assert "swap leverage BTC-USDT-SWAP = 5x" in r.warnings and "swap leverage ETH-USDT-SWAP = 5x" in r.warnings
+
+
+def test_low_swap_leverage_is_a_problem():
+    acc = FakeAccount()
+    acc.leverage = "1"
+    r = preflight(acc, FakePublic(), CFG, DEFAULT_INSTRUMENTS)
+    assert any("swap leverage BTC-USDT-SWAP is 1x, below 2x" in p for p in r.problems)
+
+
+def test_unreadable_swap_leverage_is_a_problem():
+    acc = FakeAccount()
+    acc.leverage_fail = True
+    r = preflight(acc, FakePublic(), CFG, DEFAULT_INSTRUMENTS)
+    assert any("could not read swap leverage BTC-USDT-SWAP" in p and "ConnectionError" in p for p in r.problems)
+
+
+def test_thin_margin_buffer_is_a_warning_and_1_2x_stays_a_problem():
+    thin = run(details=[{"ccy": "USDT", "cashBal": "350", "availBal": "350"}])     # 1.4 x 250
+    assert thin.ok and any("thin margin buffer" in w for w in thin.warnings)
+    assert not any("thin margin buffer" in w for w in run().warnings)
+    assert not run(details=[{"ccy": "USDT", "cashBal": "200", "availBal": "200"}]).ok
+
+
+def test_uncalibrated_config_is_a_warning_not_a_problem():
+    r = preflight(FakeAccount(), FakePublic(), CarryConfig(mgn_calibrated=False), DEFAULT_INSTRUMENTS)
+    assert r.ok and any("not calibrated" in w for w in r.warnings)
+    assert not any("not calibrated" in w for w in run().warnings)

@@ -57,7 +57,7 @@ def test_reconcile_adopts_a_healthy_hedge():
     ex, st = hedged_exchange(), CarryState()
     notes = reconcile(ex, DEFAULT_INSTRUMENTS, CFG, st, [].append, 1000)
     assert st.mode == "HEDGED" and st.legs["BTC"].contracts == pytest.approx(0.2)
-    assert st.legs["BTC"].spot_qty == pytest.approx(0.002, rel=1e-3) and st.legs["BTC"].entry_ts == 1000
+    assert st.legs["BTC"].spot_qty == pytest.approx(0.002, rel=1e-3) and st.legs["BTC"].entry_ts == 1000 - CFG.min_hold * 8 * 3600 * 1000
     assert any("adopted" in n and "BTC" in n for n in notes)
 
 

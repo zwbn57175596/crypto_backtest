@@ -69,3 +69,11 @@ def test_settle_sec_must_be_finite():
     for bad in (float("nan"), float("inf")):
         with pytest.raises(ValueError):
             CarryConfig(settle_sec=bad)
+
+
+def test_mgn_calibrated_defaults_true_in_the_dataclass_and_is_validated_as_bool():
+    import pytest
+    from carry.config import CarryConfig
+    assert CarryConfig().mgn_calibrated is True and CarryConfig().settle_sec == 0.0
+    with pytest.raises(ValueError):
+        CarryConfig(mgn_calibrated="yes")

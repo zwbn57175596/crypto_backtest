@@ -230,3 +230,139 @@ def test_no_sleep_when_settle_is_zero():
     leg = exe.open("BTC", 125.0, now_ms=0)
     exe.close("BTC", leg)
     assert slept == []
+
+
+# --- final fix wave: order results, lagging reads, pre-trade errors ---------------------
+from carry.executor import PreTradeError  # noqa: E402
+from carry.types import OrderResult  # noqa: E402
+
+
+class Lagging(FakeExchange):
+    """Real fills, scripted results, and position reads that lag `lag` reads behind the order."""
+
+    def __init__(self, perp_result=None, spot_result=None, perp_lag=0, spot_lag=0, swallow_perp=False,
+                 swallow_spot=False):
+        super().__init__()
+        self.perp_result, self.spot_result = perp_result, spot_result
+        self.perp_lag, self.spot_lag, self.swallow_perp, self.swallow_spot = perp_lag, spot_lag, swallow_perp, swallow_spot
+        self._stale_perp = self._stale_spot = None
+        self._perp_lag_left = self._spot_lag_left = 0
+
+    def sell_swap(self, coin, contracts):
+        self._stale_perp = self.swap.get(coin, 0.0)
+        if self.swallow_perp:
+            self.calls.append(("sell_swap", coin, contracts))
+        else:
+            super().sell_swap(coin, contracts)
+        self._perp_lag_left = self.perp_lag
+        return self.perp_result or OrderResult(True, contracts, 1.0)
+
+    def buy_spot(self, coin, qty):
+        self._stale_spot = self.spot.get(coin, 0.0)
+        if self.swallow_spot:
+            self.calls.append(("buy_spot", coin, qty))
+        else:
+            super().buy_spot(coin, qty)
+        self._spot_lag_left = self.spot_lag
+        return self.spot_result or OrderResult(True, qty, 1.0)
+
+    def swap_contracts(self, coin):
+        if self._perp_lag_left > 0:
+            self._perp_lag_left -= 1
+            return self._stale_perp
+        return super().swap_contracts(coin)
+
+    def spot_balance(self, coin):
+        if self._spot_lag_left > 0:
+            self._spot_lag_left -= 1
+            return self._stale_spot
+        return super().spot_balance(coin)
+
+
+def lag_make(**kw):
+    ex = Lagging(**kw)
+    alerts: list[str] = []
+    return ex, Executor(ex, DEFAULT_INSTRUMENTS, CarryConfig(), alerts.append), alerts
+
+
+def test_perp_fill_visible_only_on_second_read_still_opens_hedged():
+    ex, exe, alerts = lag_make(perp_lag=1)
+    leg = exe.open("BTC", 125.0, now_ms=0)
+    assert leg is not None and leg.contracts == pytest.approx(0.20)
+    assert not any("CRITICAL" in a for a in alerts) and ops(ex, "buy_swap") == []
+
+
+def test_perp_reported_filled_but_never_visible_alerts_critical_and_returns_none():
+    ex, exe, alerts = lag_make(swallow_perp=True)
+    assert exe.open("BTC", 125.0, now_ms=0) is None
+    assert any(a.startswith("[CRITICAL] open BTC: perp order reported") and "no position is visible" in a
+               for a in alerts)
+    assert ops(ex, "buy_spot") == []
+
+
+def test_unconfirmed_perp_result_triggers_the_re_read():
+    ex, exe, alerts = lag_make(perp_result=OrderResult(False, error="UNCONFIRMED: no terminal state"), perp_lag=1)
+    assert exe.open("BTC", 125.0, now_ms=0) is not None
+
+
+def test_plain_perp_rejection_is_not_re_read_or_critical():
+    ex, exe, alerts = lag_make(perp_result=OrderResult(False, error="rejected"), swallow_perp=True)
+    assert exe.open("BTC", 125.0, now_ms=0) is None
+    assert any("perp order not filled" in a for a in alerts) and not any("CRITICAL" in a for a in alerts)
+
+
+def test_spot_fill_visible_only_on_second_read_still_opens_hedged():
+    ex, exe, alerts = lag_make(spot_lag=1)
+    assert exe.open("BTC", 125.0, now_ms=0) is not None
+    assert not any("CRITICAL" in a for a in alerts)
+
+
+def test_spot_reported_filled_but_never_visible_alerts_critical_then_rolls_back_the_perp():
+    ex, exe, alerts = lag_make(swallow_spot=True)
+    assert exe.open("BTC", 125.0, now_ms=0) is None
+    assert any(a.startswith("[CRITICAL] open BTC: spot order reported") for a in alerts)
+    assert ex.swap["BTC"] == pytest.approx(0.0)
+
+
+def test_drain_alerts_when_an_order_is_rejected():
+    ex, exe, alerts = make()
+    leg = exe.open("BTC", 125.0, now_ms=0)
+    ex.fail_next("sell_spot", 3)
+    assert not exe.close("BTC", leg)
+    assert any(a == "order rejected: injected sell_spot failure" for a in alerts)
+
+
+class ReadsDown(FakeExchange):
+    def __init__(self, what):
+        super().__init__()
+        self.what = what
+
+    def price(self, coin):
+        if self.what == "price":
+            raise ConnectionError("down")
+        return super().price(coin)
+
+    def swap_contracts(self, coin):
+        if self.what == "swap":
+            raise ConnectionError("down")
+        return super().swap_contracts(coin)
+
+    def spot_balance(self, coin):
+        if self.what == "spot":
+            raise TimeoutError("down")
+        return super().spot_balance(coin)
+
+
+@pytest.mark.parametrize("what,exc", [("price", "ConnectionError"), ("swap", "ConnectionError"), ("spot", "TimeoutError")])
+def test_pre_trade_read_failures_raise_pre_trade_error_before_any_order(what, exc):
+    ex = ReadsDown(what)
+    exe = Executor(ex, DEFAULT_INSTRUMENTS, CarryConfig(), [].append)
+    with pytest.raises(PreTradeError, match=f"pre-trade read failed \\({exc}\\)"):
+        exe.open("BTC", 125.0, now_ms=0)
+    assert ex.calls == []
+
+
+def test_plan_position_value_error_stays_raw():
+    ex, exe, _ = make()
+    with pytest.raises(ValueError):
+        exe.open("BTC", 1.0, now_ms=0)                    # far below the minimum order size
