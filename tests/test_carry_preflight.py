@@ -90,6 +90,13 @@ def test_changed_contract_spec_is_a_problem():
                for p in run(public=FakePublic({"ETH-USDT-SWAP": {"ctVal": "0.05"}})).problems)
 
 
+def test_changed_min_size_is_a_warning_not_a_problem():
+    r = run(public=FakePublic({"BTC-USDT": {"minSz": "0.00002"}}))
+    assert r.ok
+    assert any("BTC-USDT" in w and "minSz" in w for w in r.warnings)
+    assert not any("minSz" in p for p in r.problems)
+
+
 def test_read_failure_is_reported_not_raised():
     acc = FakeAccount()
     acc.fail = True

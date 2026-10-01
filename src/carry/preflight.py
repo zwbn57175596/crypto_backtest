@@ -79,8 +79,19 @@ def preflight(account: Any, public: Any, cfg: CarryConfig, insts: dict[str, Inst
                 (i.spot_id, spot, {"lotSz": i.spot_lot, "minSz": i.spot_min}),
             ):
                 for key, expected in want.items():
-                    if not math.isclose(_num(row.get(key)), expected, rel_tol=1e-9):
-                        r.problems.append(f"{inst_id} {key} is {row.get(key)}, expected {expected}")
+                    actual = _num(row.get(key))
+                    if math.isclose(actual, expected, rel_tol=1e-9):
+                        continue
+                    msg = f"{inst_id} {key} is {row.get(key)}, expected {expected}"
+                    if key == "minSz":
+                        # minSz is only a floor check in sizing.py (plan_position
+                        # rejects a quantity below it); unlike ctVal/lotSz it never
+                        # feeds the lot-rounding math, so a mismatch is a warning,
+                        # not a hard block (observed on OKX demo: demo's minSz can
+                        # be stricter than live's for the same instrument).
+                        r.warnings.append(msg)
+                    else:
+                        r.problems.append(msg)
 
     def check_leverage(inst: Instrument) -> None:
         rows = _rows(account.get_leverage(mgnMode="cross", instId=inst.swap_id), "leverage")
