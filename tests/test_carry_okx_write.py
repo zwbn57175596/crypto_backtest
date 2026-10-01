@@ -115,6 +115,18 @@ def test_buy_swap_is_reduce_only():
     assert kw["side"] == "buy" and kw["reduceOnly"] == "true" and kw["tdMode"] == "cross"
 
 
+def test_spot_td_mode_defaults_to_cross():
+    # "cash" tdMode is rejected by OKX once the account is in multi-currency
+    # margin mode (acctLv=3, required by preflight): sCode 51000 "Parameter
+    # tdMode error", confirmed against the real API on 2026-10-01. "cross"
+    # is the only tdMode that works for spot orders in that account mode;
+    # it does not borrow since preflight hard-blocks autoLoan=true.
+    tr = FakeTrade()
+    ex, _ = make(tr)
+    ex.buy_spot("BTC", 0.002)
+    assert tr.placed[0]["tdMode"] == "cross"
+
+
 def test_spot_orders_use_base_currency_target_and_configured_td_mode():
     tr = FakeTrade()
     ex, _ = make(tr, spot_td_mode="cash")

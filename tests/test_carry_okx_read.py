@@ -260,7 +260,7 @@ def test_funding_cache_does_not_refetch_more_than_once_per_minute_after_expiry()
 def test_constructor_validation_and_defaults():
     with pytest.raises(ValueError):
         OkxExchange(None, None, None, None, retries=0)
-    assert OkxExchange(None, None, None, None).spot_td_mode == "cash"
+    assert OkxExchange(None, None, None, None).spot_td_mode == "cross"
 
 
 def test_mgn_ratio_non_string_raw_value_is_none():

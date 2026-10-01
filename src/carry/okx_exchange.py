@@ -61,7 +61,7 @@ class _FundingCache:
 
 class OkxExchange:
     def __init__(self, trade: Any, account: Any, public: Any, market: Any,
-                 insts: dict[str, Instrument] | None = None, *, spot_td_mode: str = "cash",
+                 insts: dict[str, Instrument] | None = None, *, spot_td_mode: str = "cross",
                  max_basis: float = 0.01, max_tick_age_sec: float = 30.0, order_timeout_sec: float = 10.0,
                  poll_sec: float = 0.5, retries: int = 3, backoff_sec: float = 0.5, read_ttl_sec: float = 1.0,
                  clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep,

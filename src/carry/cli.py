@@ -83,7 +83,7 @@ def default_clients(env: Mapping[str, str], cfg: CarryConfig, alert: Callable[[s
     for client in (trade, account, public, market):            # python-okx clients are httpx.Client subclasses
         client.timeout = httpx.Timeout(10.0, connect=5.0)
     ex = OkxExchange(trade, account, public, market, DEFAULT_INSTRUMENTS,
-                     spot_td_mode=env.get("OKX_SPOT_TD_MODE") or "cash", alert=alert)
+                     spot_td_mode=env.get("OKX_SPOT_TD_MODE") or "cross", alert=alert)
     return Clients(ex, account, public, mode="DEMO" if flag == "1" else "LIVE")
 
 

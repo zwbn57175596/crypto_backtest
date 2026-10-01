@@ -438,15 +438,15 @@ def test_default_clients_wiring_live_defaults(monkeypatch):
     assert c.mode == "LIVE" and len(_FakeApi.made) == 4
     assert all(a.kw["flag"] == "0" and a.kw["debug"] is False for a in _FakeApi.made)
     assert all(a.timeout == httpx.Timeout(10.0, connect=5.0) for a in _FakeApi.made)
-    assert c.exchange.spot_td_mode == "cash" and c.exchange._alert_fn is sent
+    assert c.exchange.spot_td_mode == "cross" and c.exchange._alert_fn is sent
 
 
 @pytest.mark.parametrize("demo", ["1", "true", "YES"])
-def test_default_clients_demo_flag_and_cross_mode(monkeypatch, demo):
+def test_default_clients_demo_flag_and_cash_mode_override(monkeypatch, demo):
     _inject_fake_okx(monkeypatch)
-    c = default_clients(dict(KEYS, OKX_DEMO=demo, OKX_SPOT_TD_MODE="cross"), CarryConfig())
+    c = default_clients(dict(KEYS, OKX_DEMO=demo, OKX_SPOT_TD_MODE="cash"), CarryConfig())
     assert c.mode == "DEMO" and all(a.kw["flag"] == "1" for a in _FakeApi.made)
-    assert c.exchange.spot_td_mode == "cross"
+    assert c.exchange.spot_td_mode == "cash"
 
 
 def test_default_clients_missing_keys_exit_before_importing_okx(monkeypatch):
