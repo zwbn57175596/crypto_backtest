@@ -13,12 +13,15 @@ from typing import Any, Callable
 
 from carry.types import DEFAULT_INSTRUMENTS, Instrument, OrderResult
 
-TRANSIENT_CODES = frozenset({"50001", "50004", "50011", "50013", "50026"})   # verify on demo
-# UNVERIFIED on demo: OKX duplicate-clOrdId and order-not-found sCodes/codes. Isolated here so the
-# demo run can correct them. Safety relies on get_order read-after-write consistency (probe before any
-# re-POST) OR on OKX clOrdId uniqueness; the demo run must confirm both behaviours.
+TRANSIENT_CODES = frozenset({"50001", "50004", "50011", "50013", "50026"})   # still unverified on demo (2026-10-03: a
+# 30-call/2.88s burst never triggered 50011; a harder burst or a stricter endpoint would be needed)
+# CONFIRMED on demo 2026-10-03: OKX gives NO clOrdId idempotency. Re-POSTing an already-filled order's
+# clOrdId is accepted as a brand-new, independent order (fresh ordId, sCode=0) -- this code is never
+# actually returned in practice and must not be relied on as a safety net. Real safety is get_order
+# read-after-write (probe before any re-POST in _place()); that is load-bearing, not a backstop.
 DUPLICATE_CLORDID_CODES = frozenset({"51016"})
-NOT_FOUND_CODES = frozenset({"51603"})
+NOT_FOUND_CODES = frozenset({"51603"})   # CONFIRMED on demo 2026-10-03 (also returned for an order rejected
+# at submission, not only a truly nonexistent one -- cannot distinguish the two cases from the code alone)
 FUNDING_REFETCH_MIN_SEC = 60.0
 TERMINAL_STATES = frozenset({"filled", "canceled", "mmp_canceled"})
 SETTLEMENT_MS = 8 * 3600 * 1000
@@ -221,7 +224,8 @@ class OkxExchange:
             return v if math.isfinite(v) else None
         return self._cached(("mgn",), fetch)
 
-    # --- writes (market orders, idempotent by clOrdId) ------------------------
+    # --- writes (market orders; clOrdId gives NO idempotency on OKX -- see DUPLICATE_CLORDID_CODES
+# above -- so safety rests entirely on probing get_order before any re-POST, never on the clOrdId itself)
     def _next_cl_ord_id(self) -> str:
         self._seq += 1
         return f"carry{int(self.clock() * 1000)}{self._seq % 1000:03d}"
