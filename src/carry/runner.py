@@ -48,15 +48,26 @@ class Runner:
     def __init__(self, engine, report_fn: Callable[[], str], alert: Callable[[str], None], cfg: CarryConfig,
                  *, heartbeat_sec: float = 3600.0, clock: Callable[[], float] = time.time,
                  mono: Callable[[], float] = time.monotonic,
-                 sleep: Callable[[float], None] = time.sleep) -> None:
+                 sleep: Callable[[float], None] = time.sleep,
+                 ping: Callable[[], None] | None = None) -> None:
         self.engine, self.report_fn, self.alert, self.cfg = engine, report_fn, alert, cfg
         self.heartbeat_sec, self.clock, self.mono, self.sleep = heartbeat_sec, clock, mono, sleep
+        self.ping = ping
 
     def _alert(self, msg: str) -> None:
         """Alert without ever raising: a broken alerter must not kill the loop."""
         try:
             self.alert(msg)
         except Exception:  # noqa: BLE001
+            pass
+
+    def _ping(self) -> None:
+        """Dead-man's-switch ping on a successful heartbeat; silence means the loop is stuck."""
+        if self.ping is None:
+            return
+        try:
+            self.ping()
+        except Exception:  # noqa: BLE001 - a flaky monitor must not kill the loop
             pass
 
     def run(self, should_stop: Callable[[], bool]) -> None:
@@ -76,4 +87,5 @@ class Runner:
                     self._alert(f"[CRITICAL] runner: heartbeat failed {e!r}")
                 else:
                     self._alert("[HEARTBEAT]\n" + report)
+                    self._ping()
             self.sleep(self.cfg.poll_sec)

@@ -145,6 +145,40 @@ def test_real_halted_engine_still_heartbeats():
     assert eng.state.mode == "HALTED"
 
 
+def test_ping_fires_once_per_successful_heartbeat():
+    eng, alerts, pings = FakeEngine(), [], []
+    clock = Clock()
+    Runner(eng, lambda: "REPORT", alerts.append, CarryConfig(poll_sec=2.0), heartbeat_sec=5.0,
+           clock=clock.now, mono=clock.now, sleep=clock.sleep, ping=lambda: pings.append(1)).run(stop_after(5))
+    assert len(pings) == 2          # same cadence as the heartbeat (t=1000 and 1006)
+
+
+def test_ping_not_called_when_heartbeat_report_fails():
+    def bad():
+        raise ConnectionError("down")
+    eng, alerts, pings = FakeEngine(), [], []
+    make(eng, alerts, report=bad)[0]
+    clock = Clock()
+    Runner(eng, bad, alerts.append, CarryConfig(poll_sec=2.0), heartbeat_sec=1.0,
+           clock=clock.now, mono=clock.now, sleep=clock.sleep, ping=lambda: pings.append(1)).run(stop_after(2))
+    assert pings == []
+
+
+def test_no_ping_configured_does_not_raise():
+    eng, alerts = FakeEngine(), []
+    make(eng, alerts, heartbeat=1.0)[0].run(stop_after(2))   # ping=None by default
+
+
+def test_raising_ping_does_not_stop_the_loop():
+    def bad_ping():
+        raise RuntimeError("monitor unreachable")
+    eng, alerts = FakeEngine(), []
+    clock = Clock()
+    Runner(eng, lambda: "REPORT", alerts.append, CarryConfig(poll_sec=2.0), heartbeat_sec=1.0,
+           clock=clock.now, mono=clock.now, sleep=clock.sleep, ping=bad_ping).run(stop_after(3))
+    assert len(eng.calls) == 3
+
+
 def test_lock_file_contains_pid(tmp_path):
     p = tmp_path / "carry.lock"
     a = InstanceLock(p)

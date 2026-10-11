@@ -34,6 +34,22 @@ def _okx_flag(env: Mapping[str, str]) -> str:
     return "1" if str(env.get("OKX_DEMO", "")).lower() in ("1", "true", "yes") else "0"
 
 
+def _build_ping(env: Mapping[str, str], get: Callable[..., Any] | None = None) -> Callable[[], None] | None:
+    """External dead-man's-switch ping (e.g. Healthchecks.io): fired once per successful heartbeat."""
+    url = env.get("HEALTHCHECK_PING_URL")
+    if not url:
+        return None
+
+    def ping() -> None:
+        (get or _default_get)(url, timeout=10.0)
+    return ping
+
+
+def _default_get(url: str, timeout: float) -> None:
+    import httpx
+    httpx.get(url, timeout=timeout).raise_for_status()
+
+
 def load_env_file(path: str | Path) -> dict[str, str]:
     out: dict[str, str] = {}
     for line in Path(path).read_text(encoding="utf-8-sig").splitlines():
@@ -213,7 +229,8 @@ def _preflight_command(clients: Clients, cfg: CarryConfig, out: Callable[[str], 
 
 def _locked_command(args: argparse.Namespace, clients: Clients, cfg: CarryConfig,
                     alerter: Callable[[str], None], clock: Callable[[], float],
-                    sleep: Callable[[float], None], out: Callable[[str], None]) -> int:
+                    sleep: Callable[[float], None], out: Callable[[str], None],
+                    ping: Callable[[], None] | None = None) -> int:
     lock = InstanceLock(os.path.abspath(cfg.state_path) + ".lock")
     try:
         lock.acquire()
@@ -245,7 +262,7 @@ def _locked_command(args: argparse.Namespace, clients: Clients, cfg: CarryConfig
         try:
             Runner(eng, lambda: f"okx={clients.mode} "
                    + exposure_report(clients.exchange, DEFAULT_INSTRUMENTS, cfg, eng.state), alerter,
-                   cfg, heartbeat_sec=args.heartbeat_sec, clock=clock, sleep=sleep).run(stop)
+                   cfg, heartbeat_sec=args.heartbeat_sec, clock=clock, sleep=sleep, ping=ping).run(stop)
         finally:
             for s, h in old.items():
                 signal.signal(s, h)
@@ -275,7 +292,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     try:
         if args.cmd == "alert-test":
             out(f"okx mode: {'DEMO' if _okx_flag(env) == '1' else 'LIVE'}")
-            alerter("[INFO] carry alert test")
+            alerter("[CRITICAL] carry alert test")  # must clear the email sink's only_critical filter too
             out(f"channels: {getattr(alerter, 'channels', [])}")
             return 0
 
@@ -293,7 +310,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
             out(exposure_report(clients.exchange, DEFAULT_INSTRUMENTS, cfg, _status_state(cfg, out)))
             return 0
 
-        return _locked_command(args, clients, cfg, alerter, clock, sleep, out)
+        return _locked_command(args, clients, cfg, alerter, clock, sleep, out, ping=_build_ping(env))
     finally:
         flush = getattr(alerter, "flush", None)              # deliver queued notifications before exiting
         if callable(flush):

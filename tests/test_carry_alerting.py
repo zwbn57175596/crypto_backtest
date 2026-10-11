@@ -275,6 +275,35 @@ def test_email_sink_empty_message_does_not_raise():
     assert FakeSMTP.instances[0].log[-1] == ("send", "[carry] ", "a@x")
 
 
+def test_email_sink_defaults_to_only_critical():
+    assert EmailSink("h", 465, "u", "p", "u@x", ["a@x"]).only_critical is True
+
+
+def test_alerter_routes_routine_messages_away_from_only_critical_sinks():
+    email, telegram, clock = Sink("email"), Sink("telegram"), Clock()
+    email.only_critical = True
+    a = make([email, telegram], clock)
+    for msg in ("[HEARTBEAT]\nall good", "[INFO] opened BTC", "[WARNING] mgn_unit not calibrated", "risk tier NORMAL -> NORMAL"):
+        a(msg)
+        clock.t += 400  # clear throttling between messages
+    assert email.sent == []
+    assert len(telegram.sent) == 4
+
+
+def test_alerter_still_sends_critical_messages_to_only_critical_sinks():
+    email = Sink("email")
+    email.only_critical = True
+    make([email])("[CRITICAL] hedge broken")
+    assert email.sent == ["[CRITICAL] hedge broken"]
+
+
+def test_build_alerter_email_sink_is_only_critical(tmp_path, clean_carry_logger):
+    log = tmp_path / "carry.log"
+    mail = {"SMTP_HOST": "h", "SMTP_USER": "u", "SMTP_PASSWORD": "p", "ALERT_EMAIL_TO": "a@x.com"}
+    alerter = build_alerter(mail, str(log))
+    assert alerter.sinks[0].only_critical is True
+
+
 def test_setup_logger_isolates_and_quiets_http_loggers(tmp_path, clean_carry_logger):
     setup_logger(tmp_path / "carry.log")
     assert logging.getLogger("httpx").level == logging.WARNING

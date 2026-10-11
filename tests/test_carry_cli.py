@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from carry.cli import Clients, load_config, load_env_file, main
+from carry.cli import Clients, _build_ping, load_config, load_env_file, main
 from carry.fake_exchange import FakeExchange
 from carry.runner import InstanceLock
 from carry.state import CarryState, load_state, save_state
@@ -513,3 +513,18 @@ def test_uncalibrated_config_run_alert_preflight_warning_and_force_open_warning(
     assert main(argv + ["run", "--max-steps", "2"], env={}, **kw) == 0
     assert any("mgn_calibrated=False" in a and a.startswith("[INFO] carry starting") for a in alerts)
     assert load_state(tmp_path / "state.json").legs == {}                          # signal opens stayed disabled
+
+
+# --- dead-man's-switch ping -------------------------------------------------
+
+def test_build_ping_returns_none_without_url():
+    assert _build_ping({}) is None
+
+
+def test_build_ping_calls_get_with_url_and_timeout():
+    calls = []
+    ping = _build_ping({"HEALTHCHECK_PING_URL": "https://hc-ping.com/abc"},
+                       get=lambda url, timeout: calls.append((url, timeout)))
+    assert ping is not None
+    ping()
+    assert calls == [("https://hc-ping.com/abc", 10.0)]

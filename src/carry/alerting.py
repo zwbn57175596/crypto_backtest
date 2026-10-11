@@ -62,9 +62,11 @@ class EmailSink:
     name = "email"
 
     def __init__(self, host: str, port: int, user: str, password: str, sender: str,
-                 recipients: Sequence[str], smtp_factory: Callable | None = None, timeout: float = 10.0) -> None:
+                 recipients: Sequence[str], smtp_factory: Callable | None = None, timeout: float = 10.0,
+                 only_critical: bool = True) -> None:
         self.host, self.port, self.user, self.password = host, port, user, password
         self.sender, self.recipients, self.timeout, self._factory = sender, list(recipients), timeout, smtp_factory
+        self.only_critical = only_critical  # email is noisy; reserve it for [CRITICAL], route the rest to log/Telegram
 
     def send(self, text: str) -> None:
         msg = EmailMessage()
@@ -130,6 +132,8 @@ class Alerter:
         with self._lock:
             self._last = {k: t for k, t in self._last.items() if now - t < self.throttle_sec}
         for s in self.sinks:
+            if getattr(s, "only_critical", False) and not msg.startswith("[CRITICAL]"):
+                continue
             key = (s.name, msg)
             with self._lock:
                 if key in self._last:
