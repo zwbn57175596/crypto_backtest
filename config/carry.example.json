@@ -1,0 +1,17 @@
+{
+  "coins": ["BTC", "ETH"],
+  "deploy_usdt": 250.0,
+  "max_order_notional": 300.0,
+  "enter_apr": 0.06,
+  "exit_apr": 0.02,
+  "window": 9,
+  "min_hold": 9,
+  "poll_sec": 2.0,
+  "settle_sec": 1.0,
+  "mgn_unit": 1.0,
+  "mgn_calibrated": false,
+  "mgn_warn": 4.0,
+  "mgn_close": 2.5,
+  "mgn_emergency": 1.5,
+  "state_path": "/home/ubuntu/crypto_backtest/live_state/carry_state.json"
+}

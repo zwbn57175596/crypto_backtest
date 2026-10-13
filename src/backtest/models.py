@@ -25,6 +25,7 @@ class Order:
     filled_price: float = 0.0
     filled_at: int = 0
     commission: float = 0.0
+    expire_ts: int = 0  # ms; 0 = never expires. Unfilled limit dropped when bar.timestamp >= expire_ts
 
 
 @dataclass

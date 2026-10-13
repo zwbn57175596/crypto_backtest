@@ -314,6 +314,105 @@ def cmd_portfolio_run(args: argparse.Namespace) -> None:
     print("查看: python -m backtest web")
 
 
+def cmd_mr_portfolio_run(args: argparse.Namespace) -> None:
+    import json
+    import sqlite3
+    from backtest.mean_reversion import MRParams
+    from backtest.mean_reversion_engine import MeanReversionPortfolioEngine
+    from backtest.reporter import Reporter
+
+    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+    db_path = args.db or str(Path("data") / "klines.db")
+
+    params = MRParams(
+        threshold=args.threshold,
+        tp_pct=args.tp_pct,
+        sl_pct=args.sl_pct,
+        time_stop_bars=args.time_stop_bars,
+        risk_pct=args.risk_pct,
+        entry_offset_pct=args.entry_offset_pct,
+        entry_ttl_bars=args.entry_ttl_bars,
+    )
+
+    engine = MeanReversionPortfolioEngine(
+        db_path=db_path,
+        symbols=symbols,
+        interval=args.interval,
+        exchange=args.exchange,
+        params=params,
+        balance=args.balance,
+        leverage=args.leverage,
+        maker_commission_rate=args.maker_rate,
+        taker_commission_rate=args.taker_rate,
+        max_position_symbols=args.max_position_symbols,
+        margin_ratio_limit=args.margin_ratio_limit,
+        start=f"{args.start} 00:00:00" if args.start else None,
+        end=f"{args.end} 23:59:59" if args.end else None,
+    )
+
+    print(
+        f"[均值回归组合] 标的={len(symbols)} 区间={args.start}~{args.end} "
+        f"余额={args.balance} 杠杆={args.leverage}x "
+        f"threshold={args.threshold} tp={args.tp_pct} sl={args.sl_pct} "
+        f"H={args.time_stop_bars} risk={args.risk_pct}"
+    )
+
+    result = engine.run()
+    report = Reporter.generate(result)
+    report["portfolio_symbols"] = symbols
+    report["per_symbol_stats"] = result["per_symbol_stats"]
+    report["miss_rate"] = result["miss_rate"]
+    report["entries_submitted"] = result["entries_submitted"]
+    report["entries_filled"] = result["entries_filled"]
+    report["run_leverage"] = args.leverage
+    report["run_balance"] = args.balance
+    report["run_start"] = args.start
+    report["run_end"] = args.end
+
+    print("\n=== 组合指标 ===")
+    print(f"  net_return:       {report['net_return']:+.2%}")
+    print(f"  annual_return:    {report['annual_return']:+.2%}")
+    print(f"  max_drawdown:     {report['max_drawdown']:.2%}")
+    print(f"  sharpe_ratio:     {report['sharpe_ratio']:.2f}")
+    print(f"  sortino_ratio:    {report['sortino_ratio']:.2f}")
+    print(f"  win_rate:         {report['win_rate']:.2%}")
+    print(f"  profit_factor:    {report['profit_factor']:.2f}")
+    print(f"  total_trades:     {report['total_trades']}")
+    print(f"  total_commission: {report['total_commission']:.2f} USDT")
+    print(f"  entries_submitted:{result['entries_submitted']}")
+    print(f"  entries_filled:   {result['entries_filled']}")
+    print(f"  miss_rate:        {result['miss_rate']:.1%}")
+
+    print("\n=== 各标的统计 ===")
+    for sym, stats in result["per_symbol_stats"].items():
+        print(
+            f"  {sym:12s}  交易={stats['total_trades']:>4}  "
+            f"胜率={stats['win_rate']:.1%}  净PnL={stats['net_pnl']:+.2f} USDT"
+        )
+
+    report_db = str(Path(db_path).parent / "reports.db")
+    conn = sqlite3.connect(report_db)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy TEXT, symbol TEXT, interval TEXT,
+            created_at TEXT, report_json TEXT
+        )
+    """)
+    cur = conn.execute(
+        "INSERT INTO reports (strategy, symbol, interval, created_at, report_json) "
+        "VALUES (?,?,?,?,?)",
+        ("MeanReversionPortfolio", ",".join(symbols), args.interval,
+         datetime.now(timezone.utc).isoformat(), json.dumps(report)),
+    )
+    conn.commit()
+    report_id = cur.lastrowid
+    conn.close()
+
+    print(f"\n报告已存入 reports.db (id={report_id})")
+    print("查看: python -m backtest web")
+
+
 def cmd_web(args: argparse.Namespace) -> None:
     import uvicorn
     from backtest.web.app import create_app
@@ -640,6 +739,29 @@ def main() -> None:
                              help="Stop opening new symbols when total_margin/equity exceeds this")
     p_portfolio.add_argument("--db", default=None)
 
+    p_mr = sub.add_parser("mr-portfolio-run",
+                          help="Run mean-reversion portfolio backtest (maker entry + TP/SL bracket)")
+    p_mr.add_argument("--symbols", required=True,
+                      help="Comma-separated symbols e.g. BTCUSDT,ETHUSDT")
+    p_mr.add_argument("--interval", required=True)
+    p_mr.add_argument("--exchange", default="okx")
+    p_mr.add_argument("--start", required=True, help="YYYY-MM-DD")
+    p_mr.add_argument("--end", required=True, help="YYYY-MM-DD")
+    p_mr.add_argument("--balance", type=float, default=10000.0)
+    p_mr.add_argument("--leverage", type=int, default=10)
+    p_mr.add_argument("--threshold", type=int, default=4)
+    p_mr.add_argument("--tp-pct", type=float, default=0.006, dest="tp_pct")
+    p_mr.add_argument("--sl-pct", type=float, default=0.006, dest="sl_pct")
+    p_mr.add_argument("--time-stop-bars", type=int, default=12, dest="time_stop_bars")
+    p_mr.add_argument("--risk-pct", type=float, default=0.005, dest="risk_pct")
+    p_mr.add_argument("--entry-offset-pct", type=float, default=0.001, dest="entry_offset_pct")
+    p_mr.add_argument("--entry-ttl-bars", type=int, default=2, dest="entry_ttl_bars")
+    p_mr.add_argument("--maker-rate", type=float, default=0.0002, dest="maker_rate")
+    p_mr.add_argument("--taker-rate", type=float, default=0.0005, dest="taker_rate")
+    p_mr.add_argument("--max-position-symbols", type=int, default=10, dest="max_position_symbols")
+    p_mr.add_argument("--margin-ratio-limit", type=float, default=0.8, dest="margin_ratio_limit")
+    p_mr.add_argument("--db", default=None)
+
     p_web = sub.add_parser("web", help="Start web report viewer")
     p_web.add_argument("--port", type=int, default=8000)
     p_web.add_argument("--db", default=None)
@@ -718,6 +840,8 @@ def main() -> None:
         cmd_live(args)
     elif args.command == "portfolio-run":
         cmd_portfolio_run(args)
+    elif args.command == "mr-portfolio-run":
+        cmd_mr_portfolio_run(args)
     else:
         parser.print_help()
 
